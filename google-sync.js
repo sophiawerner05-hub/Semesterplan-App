@@ -1,8 +1,10 @@
 /* =========================================================
    DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
-   (Google Tasks + Google Kalender + Gmail Briefing)
+   (Auto-Login, Bidirektionaler Sync & Wochen-Unteraufgaben)
    ========================================================= */
-const DEFAULT_GOOGLE_CLIENT_ID = 'DEINE_CLIENT_ID_HIER_EINTRAGEN.apps.googleusercontent.com';
+const DEFAULT_GOOGLE_CLIENT_ID = '420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com';
+const TOKEN_STORAGE_KEY = 'semesterplan_google_access_token';
+const TOKEN_EXPIRY_KEY = 'semesterplan_google_token_expiry';
 
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
@@ -14,28 +16,110 @@ let googleAccessToken = null;
 let tokenClient = null;
 let cachedListMap = {};
 let autoSyncInterval = null;
+let isSyncInProgress = false;
 
 function getConfiguredClientId() {
-  return localStorage.getItem('semesterplan_google_client_id') || DEFAULT_GOOGLE_CLIENT_ID;
+  const stored = localStorage.getItem('semesterplan_google_client_id');
+  if (stored && stored.includes('.apps.googleusercontent.com') && !stored.startsWith('DEINE_')) {
+    return stored;
+  }
+  return DEFAULT_GOOGLE_CLIENT_ID;
 }
 
 function isGoogleConnected() {
   return !!googleAccessToken;
 }
 
+function updateGoogleConnectedUI(connected) {
+  const badge = document.getElementById('connectionBadge');
+  const pill = document.getElementById('syncStatusPill');
+  const btnText = document.getElementById('googleBtnText');
+
+  if (connected) {
+    if (badge) {
+      badge.textContent = '☁️ Live mit Google verbunden';
+      badge.style.background = '#117864';
+    }
+    if (pill) {
+      pill.textContent = '🔄 Auto-Sync: Aktiv (Bidirektional)';
+    }
+    if (btnText) {
+      btnText.textContent = 'Verbunden (Sync)';
+    }
+  } else {
+    if (badge) {
+      badge.textContent = 'Lokal & Offline-fähig';
+      badge.style.background = '';
+    }
+    if (pill) {
+      pill.textContent = '⏰ Auto-Sync: Bereit';
+    }
+    if (btnText) {
+      btnText.textContent = 'Google Login';
+    }
+  }
+}
+
 function initGoogleSyncSettingsUI() {
+  // Standard-Client-ID direkt speichern, falls noch nicht vorhanden
+  if (!localStorage.getItem('semesterplan_google_client_id')) {
+    localStorage.setItem('semesterplan_google_client_id', DEFAULT_GOOGLE_CLIENT_ID);
+  }
+
   const input = document.getElementById('clientIdInput');
   if (input) {
-    const savedId = localStorage.getItem('semesterplan_google_client_id');
-    input.value = savedId || (DEFAULT_GOOGLE_CLIENT_ID.startsWith('DEINE_') ? '' : DEFAULT_GOOGLE_CLIENT_ID);
+    input.value = getConfiguredClientId();
   }
+
   const calCheck = document.getElementById('autoImportCalendarCheck');
   if (calCheck) {
     calCheck.checked = localStorage.getItem('semesterplan_sync_calendar') !== 'false';
   }
+
+  // Prüfen, ob noch ein gültiges Token aus der aktuellen Sitzung vorliegt -> sofortiger Auto-Sync!
+  const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+  const savedExpiry = parseInt(localStorage.getItem(TOKEN_EXPIRY_KEY) || '0', 10);
+
+  if (savedToken && Date.now() < savedExpiry) {
+    googleAccessToken = savedToken;
+    updateGoogleConnectedUI(true);
+    startBackgroundAutoSync();
+    setTimeout(() => syncWithGoogleTasksAPI(true), 600);
+  }
+
+  // Automatische Synchronisation, sobald man von Google Tasks zurück in die App wechselt
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isGoogleConnected()) {
+      syncWithGoogleTasksAPI(true);
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (isGoogleConnected()) {
+      syncWithGoogleTasksAPI(true);
+    }
+  });
 }
 
 window.addEventListener('DOMContentLoaded', initGoogleSyncSettingsUI);
+
+function startBackgroundAutoSync() {
+  if (autoSyncInterval) clearInterval(autoSyncInterval);
+  // Alle 60 Sekunden automatischer Hintergrund-Abgleich
+  autoSyncInterval = setInterval(() => {
+    if (googleAccessToken) {
+      syncWithGoogleTasksAPI(true);
+    }
+  }, 60 * 1000);
+}
+
+function handleGooglePrimaryClick() {
+  if (isGoogleConnected()) {
+    syncAndClean();
+  } else {
+    connectGoogleLive();
+  }
+}
 
 function saveGoogleConfig() {
   const input = document.getElementById('clientIdInput');
@@ -61,11 +145,6 @@ function initGoogleAuth() {
   }
 
   const clientId = getConfiguredClientId();
-  if (!clientId || clientId.startsWith('GOCSPX-') || clientId.startsWith('DEINE_') || !clientId.includes('.apps.googleusercontent.com')) {
-    openModal('googleSetupModal');
-    showToast('⚠️ Bitte gültige OAuth Client-ID eintragen (endet auf .apps.googleusercontent.com).');
-    return false;
-  }
 
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
@@ -73,22 +152,13 @@ function initGoogleAuth() {
     callback: async (tokenResponse) => {
       if (tokenResponse && tokenResponse.access_token) {
         googleAccessToken = tokenResponse.access_token;
-        const badge = document.getElementById('connectionBadge');
-        if (badge) {
-          badge.textContent = '☁️ Live mit Google verbunden';
-          badge.style.background = '#117864';
-        }
-        const pill = document.getElementById('syncStatusPill');
-        if (pill) {
-          pill.textContent = '⏰ Auto-Sync: Aktiv (Bidirektional)';
-        }
+        const expiresInSec = parseInt(tokenResponse.expires_in || '3599', 10);
+        localStorage.setItem(TOKEN_STORAGE_KEY, googleAccessToken);
+        localStorage.setItem(TOKEN_EXPIRY_KEY, String(Date.now() + (expiresInSec - 60) * 1000));
 
-        if (autoSyncInterval) clearInterval(autoSyncInterval);
-        autoSyncInterval = setInterval(() => {
-          if (googleAccessToken) syncWithGoogleTasksAPI(true);
-        }, 60 * 60 * 1000);
-
-        await syncWithGoogleTasksAPI();
+        updateGoogleConnectedUI(true);
+        startBackgroundAutoSync();
+        await syncWithGoogleTasksAPI(false);
       }
     }
   });
@@ -97,7 +167,7 @@ function initGoogleAuth() {
 
 function connectGoogleLive() {
   if (!initGoogleAuth()) return;
-  tokenClient.requestAccessToken();
+  tokenClient.requestAccessToken({ prompt: '' });
 }
 
 async function googleApiFetch(url, options = {}) {
@@ -110,7 +180,10 @@ async function googleApiFetch(url, options = {}) {
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
     googleAccessToken = null;
-    throw new Error('Google-Sitzung abgelaufen. Bitte neu verbinden.');
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(TOKEN_EXPIRY_KEY);
+    updateGoogleConnectedUI(false);
+    throw new Error('Google-Sitzung abgelaufen. Bitte kurz neu verbinden.');
   }
   if (!response.ok) {
     const errText = await response.text();
@@ -155,8 +228,57 @@ async function ensureModuleTaskLists() {
 }
 
 /* =========================================================
-   ECHTZEIT-EINZELAKTIONEN (BEI KLICK IN DER WEB-APP)
+   WOCHEN-OBERAUFGABE & UNTERAUFGABEN (SUBTASKS) LOGIK
    ========================================================= */
+async function ensureWeekParentTask(listId, weekIdx, activeGoogleTasks = null) {
+  const week = appState.weeks[weekIdx];
+  if (!week) return null;
+
+  week.googleParentTaskIds = week.googleParentTaskIds || {};
+
+  // Falls Liste der Google Tasks übergeben wurde, prüfen ob Oberaufgabe schon existiert
+  if (Array.isArray(activeGoogleTasks)) {
+    const weekLabelOneLine = week.weekLabel.replace(/\n/g, ' ').trim();
+    const existingParent = activeGoogleTasks.find(t =>
+      !t.parent && (
+        (t.id && t.id === week.googleParentTaskIds[listId]) ||
+        (t.notes && t.notes.includes(`[WocheParent:${week.id}]`)) ||
+        (t.title && t.title.replace(/^📅\s*/, '').trim().toLowerCase() === weekLabelOneLine.toLowerCase())
+      )
+    );
+    if (existingParent) {
+      week.googleParentTaskIds[listId] = existingParent.id;
+      return existingParent.id;
+    }
+  } else if (week.googleParentTaskIds[listId]) {
+    return week.googleParentTaskIds[listId];
+  } else {
+    const fetched = await fetchAllGoogleTasks(listId);
+    const active = fetched.filter(t => !t.deleted);
+    return ensureWeekParentTask(listId, weekIdx, active);
+  }
+
+  // Oberaufgabe für diese Semesterwoche neu anlegen
+  const parsed = parseWeekDates(week.weekLabel);
+  const dueIso = parsed
+    ? new Date(Date.UTC(parsed.weekSun.getFullYear(), parsed.weekSun.getMonth(), parsed.weekSun.getDate(), 12, 0, 0)).toISOString()
+    : new Date().toISOString();
+
+  const weekTitle = `📅 ${week.weekLabel.replace(/\n/g, ' ').trim()}`;
+  const createdParent = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: weekTitle,
+      notes: `Semesterwoche Oberaufgabe [WocheParent:${week.id}]`,
+      due: dueIso
+    })
+  });
+
+  week.googleParentTaskIds[listId] = createdParent.id;
+  saveState();
+  return createdParent.id;
+}
+
 function buildTaskPayload(weekIdx, shortName, item) {
   const week = appState.weeks[weekIdx];
   const parsed = parseWeekDates(week.weekLabel);
@@ -166,7 +288,7 @@ function buildTaskPayload(weekIdx, shortName, item) {
     const p = item.dueDate.split('-');
     dueIso = new Date(Date.UTC(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 12, 0, 0)).toISOString();
   } else if (parsed) {
-    dueIso = new Date(Date.UTC(parsed.weekMon.getFullYear(), parsed.weekMon.getMonth(), parsed.weekMon.getDate(), 12, 0, 0)).toISOString();
+    dueIso = new Date(Date.UTC(parsed.weekSun.getFullYear(), parsed.weekSun.getMonth(), parsed.weekSun.getDate(), 12, 0, 0)).toISOString();
   } else {
     dueIso = new Date().toISOString();
   }
@@ -182,6 +304,9 @@ function buildTaskPayload(weekIdx, shortName, item) {
   };
 }
 
+/* =========================================================
+   ECHTZEIT-EINZELAKTIONEN (BEI KLICK IN DER WEB-APP)
+   ========================================================= */
 async function pushSingleTaskToggleToGoogle(weekIdx, shortName, item) {
   try {
     if (!cachedListMap[shortName]) await ensureModuleTaskLists();
@@ -210,13 +335,18 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
     const listId = cachedListMap[shortName];
     if (!listId) return;
 
+    // Wochen-Oberaufgabe ermitteln/erstellen, damit die Aufgabe als Unteraufgabe (Subtask) dieser Woche angelegt wird
+    const parentTaskId = await ensureWeekParentTask(listId, weekIdx);
+    const parentQuery = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
+
     const payload = buildTaskPayload(weekIdx, shortName, item);
-    const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
+    const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks${parentQuery}`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
 
     item.googleTaskId = created.id;
+    item.parentTaskId = parentTaskId;
     item.lastSyncedDone = item.done;
     item.lastSyncedText = item.text;
 
@@ -225,7 +355,7 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
     }
 
     saveState();
-    showToast('☁️ Aufgabe sofort in Google Tasks & Kalender gespeichert!');
+    showToast('☁️ Als Unteraufgabe der Woche in Google Tasks gespeichert!');
   } catch (e) {
     console.error(e);
   }
@@ -246,13 +376,7 @@ async function pushSingleTaskEditToGoogle(weekIdx, shortName, item) {
       item.lastSyncedDone = item.done;
       item.lastSyncedText = item.text;
     } else {
-      const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
-      item.googleTaskId = created.id;
-      item.lastSyncedDone = item.done;
-      item.lastSyncedText = item.text;
+      await pushSingleTaskCreateToGoogle(weekIdx, shortName, item);
     }
 
     if (item.syncCalendar && item.dueDate) {
@@ -284,15 +408,18 @@ async function deleteSingleTaskFromGoogle(shortName, googleTaskId) {
    ========================================================= */
 async function syncWithGoogleTasksAPI(silent = false) {
   if (!googleAccessToken) {
-    connectGoogleLive();
+    if (!silent) connectGoogleLive();
     return;
   }
+  if (isSyncInProgress) return;
+  isSyncInProgress = true;
 
-  if (!silent) showToast('🔄 Bidirektionale Synchronisation läuft...');
+  if (!silent) showToast('🔄 Synchronisiere mit Google Tasks & Kalender...');
 
   try {
     const listMap = await ensureModuleTaskLists();
 
+    // Gelöschte Aufgaben auch in Google Tasks entfernen
     if (Array.isArray(appState.deletedGoogleTaskIds) && appState.deletedGoogleTaskIds.length > 0) {
       for (const delEntry of appState.deletedGoogleTaskIds) {
         const lId = listMap[delEntry.shortName];
@@ -308,6 +435,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
     }
 
     let importedFromGoogleCount = 0;
+    let statusChangedFromGoogleCount = 0;
 
     for (const mod of appState.modules) {
       const shortName = mod.shortName;
@@ -317,6 +445,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
       const deletedTaskIds = new Set(allRawTasks.filter(t => t.deleted).map(t => t.id));
       const activeGoogleTasks = allRawTasks.filter(t => !t.deleted && (t.title || '').trim() !== '');
 
+      // In Google gelöschte Aufgaben auch lokal entfernen
       for (const week of appState.weeks) {
         const items = week.cells[shortName] || [];
         week.cells[shortName] = items.filter(item => !(item.googleTaskId && deletedTaskIds.has(item.googleTaskId)));
@@ -324,11 +453,39 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
       const matchedGoogleTaskIds = new Set();
 
+      // Wochen-Oberaufgaben registrieren, damit sie nicht als normale Aufgaben doppelt importiert werden
+      const parentTaskIdToWeekIdx = {};
+      for (let wIdx = 0; wIdx < appState.weeks.length; wIdx++) {
+        const week = appState.weeks[wIdx];
+        const weekLabelOneLine = week.weekLabel.replace(/\n/g, ' ').trim();
+        const existingParent = activeGoogleTasks.find(t =>
+          !t.parent && (
+            (t.notes && t.notes.includes(`[WocheParent:${week.id}]`)) ||
+            (t.title && t.title.replace(/^📅\s*/, '').trim().toLowerCase() === weekLabelOneLine.toLowerCase())
+          )
+        );
+        if (existingParent) {
+          week.googleParentTaskIds = week.googleParentTaskIds || {};
+          week.googleParentTaskIds[listId] = existingParent.id;
+          matchedGoogleTaskIds.add(existingParent.id);
+          parentTaskIdToWeekIdx[existingParent.id] = wIdx;
+        }
+      }
+
       for (let wIdx = 0; wIdx < appState.weeks.length; wIdx++) {
         const week = appState.weeks[wIdx];
         const parsed = parseWeekDates(week.weekLabel);
         const sundayStr = parsed ? formatDateDE(parsed.weekSun) : '';
         const items = week.cells[shortName] || [];
+
+        if (items.length === 0) continue;
+
+        // Sicherstellen, dass die Woche eine Oberaufgabe besitzt
+        const parentTaskId = await ensureWeekParentTask(listId, wIdx, activeGoogleTasks);
+        if (parentTaskId) {
+          matchedGoogleTaskIds.add(parentTaskId);
+          parentTaskIdToWeekIdx[parentTaskId] = wIdx;
+        }
 
         for (const item of items) {
           const cleanText = item.text.replace(/^✅\s*/, '').trim();
@@ -344,7 +501,8 @@ async function syncWithGoogleTasksAPI(silent = false) {
               t.title &&
               (t.title.trim().toLowerCase() === expectedTitle.toLowerCase() ||
                t.title.trim().toLowerCase() === cleanText.toLowerCase()) &&
-              t.notes && (t.notes.includes(sundayStr) || t.notes.includes(`[WocheID:${week.id}]`))
+              ((t.notes && (t.notes.includes(sundayStr) || t.notes.includes(`[WocheID:${week.id}]`))) ||
+               (parentTaskId && t.parent === parentTaskId))
             );
           }
 
@@ -362,12 +520,15 @@ async function syncWithGoogleTasksAPI(silent = false) {
           }
 
           if (!matchedTask) {
+            // Noch nicht in Google Tasks -> als Unteraufgabe der Woche anlegen
+            const parentQuery = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
             const payload = buildTaskPayload(wIdx, shortName, item);
-            const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
+            const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks${parentQuery}`, {
               method: 'POST',
               body: JSON.stringify(payload)
             });
             item.googleTaskId = created.id;
+            item.parentTaskId = parentTaskId;
             item.lastSyncedDone = item.done;
             item.lastSyncedText = item.text;
             matchedGoogleTaskIds.add(created.id);
@@ -375,38 +536,37 @@ async function syncWithGoogleTasksAPI(silent = false) {
             matchedGoogleTaskIds.add(matchedTask.id);
             item.googleTaskId = matchedTask.id;
 
+            // Bidirektionaler Abhak-Abgleich (Google Tasks <-> App)
             const googleIsDone = (matchedTask.status === 'completed');
 
             if (typeof item.lastSyncedDone === 'boolean') {
-              if (item.done !== item.lastSyncedDone && googleIsDone === item.lastSyncedDone) {
+              if (googleIsDone !== item.lastSyncedDone && item.done === item.lastSyncedDone) {
+                // In Google Tasks wurde abgehakt oder geöffnet -> in App übernehmen!
+                item.done = googleIsDone;
+                statusChangedFromGoogleCount++;
+              } else if (item.done !== item.lastSyncedDone && googleIsDone === item.lastSyncedDone) {
+                // In der App geändert -> an Google Tasks senden
                 await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
                   method: 'PATCH',
                   body: JSON.stringify({ status: item.done ? 'completed' : 'needsAction' })
                 });
-              } else if (googleIsDone !== item.lastSyncedDone && item.done === item.lastSyncedDone) {
-                item.done = googleIsDone;
               } else if (item.done !== googleIsDone) {
+                // Im Zweifel gewinnt der aktuelle Status aus Google Tasks
                 item.done = googleIsDone;
+                statusChangedFromGoogleCount++;
               }
             } else {
-              if (item.done && !googleIsDone) {
-                await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
-                  method: 'PATCH',
-                  body: JSON.stringify({ status: 'completed' })
-                });
-              } else if (!item.done && googleIsDone) {
-                item.done = true;
+              if (googleIsDone !== item.done) {
+                if (googleIsDone) {
+                  item.done = true;
+                  statusChangedFromGoogleCount++;
+                } else {
+                  await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ status: 'completed' })
+                  });
+                }
               }
-            }
-
-            const strippedGoogleTitle = matchedTask.title.trim().replace(new RegExp(`^${shortName}:\\s*`, 'i'), '').trim();
-            if (item.lastSyncedText && item.text === item.lastSyncedText && strippedGoogleTitle !== item.text) {
-              item.text = strippedGoogleTitle;
-            } else if (item.lastSyncedText && item.text !== item.lastSyncedText) {
-              await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ title: `${shortName}: ${item.text}` })
-              });
             }
 
             item.lastSyncedDone = item.done;
@@ -415,24 +575,33 @@ async function syncWithGoogleTasksAPI(silent = false) {
         }
       }
 
-      // Neue in Google Tasks angelegte Aufgaben in die Web-App importieren
+      // Neue in Google Tasks (z.B. als Unteraufgabe einer Woche) angelegte Aufgaben in die Web-App importieren
       for (const gTask of activeGoogleTasks) {
         if (matchedGoogleTaskIds.has(gTask.id)) continue;
 
         const rawTitle = (gTask.title || '').trim();
         if (rawTitle.toLowerCase() === shortName.toLowerCase()) continue;
+        if (gTask.notes && gTask.notes.includes('[WocheParent:')) continue;
 
         const cleanTaskText = rawTitle.replace(new RegExp(`^${shortName}:\\s*`, 'i'), '').trim();
         if (!cleanTaskText) continue;
 
         let targetWeekIdx = -1;
-        if (gTask.notes) {
+
+        // 1. Prüfen, ob es eine Unteraufgabe einer Wochen-Oberaufgabe ist
+        if (gTask.parent && typeof parentTaskIdToWeekIdx[gTask.parent] === 'number') {
+          targetWeekIdx = parentTaskIdToWeekIdx[gTask.parent];
+        }
+
+        // 2. Prüfen auf WocheID in den Notizen
+        if (targetWeekIdx === -1 && gTask.notes) {
           const idMatch = gTask.notes.match(/\[WocheID:(week_\d+)\]/);
           if (idMatch) {
             targetWeekIdx = appState.weeks.findIndex(w => w.id === idMatch[1]);
           }
         }
 
+        // 3. Prüfen anhand des Fälligkeitsdatums
         if (targetWeekIdx === -1 && gTask.due) {
           const dueDateObj = new Date(gTask.due);
           targetWeekIdx = findWeekIndexByDate(dueDateObj);
@@ -453,6 +622,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
             done: gTask.status === 'completed',
             dueDate: gTask.due ? gTask.due.slice(0, 10) : null,
             googleTaskId: gTask.id,
+            parentTaskId: gTask.parent || null,
             lastSyncedDone: gTask.status === 'completed',
             lastSyncedText: cleanTaskText
           });
@@ -471,15 +641,19 @@ async function syncWithGoogleTasksAPI(silent = false) {
     renderAll();
 
     if (!silent) {
-      if (importedFromGoogleCount > 0) {
-        showToast(`✅ Sync fertig! (${importedFromGoogleCount} neue Aufgaben aus Google importiert)`);
+      if (importedFromGoogleCount > 0 || statusChangedFromGoogleCount > 0) {
+        showToast(`✅ Sync fertig! (${statusChangedFromGoogleCount} Status-Updates, ${importedFromGoogleCount} neu importiert)`);
       } else {
         showToast('✅ Web-App, Google Tasks & Kalender sind 100 % synchron!');
       }
+    } else if (statusChangedFromGoogleCount > 0 || importedFromGoogleCount > 0) {
+      showToast('☁️ Änderungen aus Google Tasks automatisch übernommen!');
     }
   } catch (error) {
     console.error(error);
-    showToast('❌ Synchronisationsfehler: ' + error.message);
+    if (!silent) showToast('❌ Synchronisationsfehler: ' + error.message);
+  } finally {
+    isSyncInProgress = false;
   }
 }
 
@@ -591,6 +765,15 @@ async function syncEventsFromGoogleCalendar() {
 /* =========================================================
    DIREKTER HTML-E-MAIL-VERSAND ÜBER DIE GMAIL REST API
    ========================================================= */
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 async function sendBriefingViaGmailAPI() {
   if (!googleAccessToken) {
     connectGoogleLive();
@@ -603,7 +786,7 @@ async function sendBriefingViaGmailAPI() {
 
     const mimeLines = [
       `To: me`,
-      `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
+      `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset="UTF-8"',
       '',
@@ -611,7 +794,7 @@ async function sendBriefingViaGmailAPI() {
     ];
 
     const rawMime = mimeLines.join('\r\n');
-    const base64UrlEncoded = btoa(unescape(encodeURIComponent(rawMime)))
+    const base64UrlEncoded = utf8ToBase64(rawMime)
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');

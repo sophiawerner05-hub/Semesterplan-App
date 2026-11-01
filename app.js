@@ -1,22 +1,42 @@
 /* =========================================================
    HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
    ========================================================= */
-const STORAGE_KEY = 'semesterplan_app_state_v2';
+const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
+
+const THEMES = {
+  rose:     { label: 'Original Rosa',   colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4' },
+  ocean:    { label: 'Ozean Blau',      colors: ['#3B82F6', '#1D4ED8', '#F8FAFC'], light: '#EFF6FF', border: '#DBEAFE' },
+  forest:   { label: 'Waldgrün',        colors: ['#2E8B57', '#1E5631', '#F4F9F5'], light: '#ECFDF5', border: '#D1FAE5' },
+  lavender: { label: 'Lavendel',        colors: ['#8B5CF6', '#5B21B6', '#FAF8FF'], light: '#F5F3FF', border: '#EDE9FE' },
+  sunset:   { label: 'Sunset Coral',    colors: ['#F97316', '#C2410C', '#FFF7ED'], light: '#FFEDD5', border: '#FED7AA' },
+  matcha:   { label: 'Matcha Latte',    colors: ['#65A30D', '#3F6212', '#F7FEE7'], light: '#ECFCCB', border: '#D9F99D' },
+  berry:    { label: 'Berry Velvet',    colors: ['#DB2777', '#831843', '#FDF2F8'], light: '#FCE7F3', border: '#FBCFE8' },
+  mocha:    { label: 'Café Mocha',      colors: ['#A16207', '#713F12', '#FEFCE8'], light: '#FEF9C3', border: '#FEF08A' },
+  dark:     { label: 'Midnight Dark',   colors: ['#D97789', '#F3A6B4', '#141216'], light: '#2A2125', border: '#3D2F35' },
+  cyber:    { label: 'Cyber Neon',      colors: ['#06B6D4', '#67E8F9', '#0F172A'], light: '#1E293B', border: '#334155' }
+};
 
 let appState = null;
 let activeModuleFilter = null;
 let currentTab = 'table';
 
 function initApp() {
+  buildThemeMenuUI();
+
   // Gespeichertes Farbschema laden
   const savedTheme = localStorage.getItem(THEME_KEY) || 'rose';
   changeTheme(savedTheme, false);
 
-  // Kompakte Kartenansicht laden (falls aktiv)
-  if (localStorage.getItem('semesterplan_compact_layout') === 'true') {
-    document.body.classList.add('force-card-layout');
+  // iPhone-Ansicht wiederherstellen (falls aktiv)
+  if (localStorage.getItem('semesterplan_iphone_view') === 'true') {
+    document.body.classList.add('iphone-view-mode');
+    updateIphoneBtnState();
   }
+
+  // Uhrzeit in der iPhone-Statusbar aktualisieren
+  updateIosClock();
+  setInterval(updateIosClock, 30000);
 
   // Daten aus localStorage oder INITIAL_DATA laden
   loadState();
@@ -27,6 +47,22 @@ function initApp() {
 
   // Komplette Oberfläche zeichnen
   renderAll();
+
+  // Klick außerhalb schließt Farbdesign-Menü
+  document.addEventListener('click', (e) => {
+    const container = document.getElementById('themeDropdownContainer');
+    const menu = document.getElementById('themeMenu');
+    if (container && menu && !container.contains(e.target)) {
+      menu.classList.add('hidden');
+    }
+  });
+}
+
+function updateIosClock() {
+  const el = document.getElementById('iosClock');
+  if (!el) return;
+  const now = new Date();
+  el.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 }
 
 function loadState() {
@@ -59,24 +95,76 @@ function saveState() {
 }
 
 /* =========================================================
-   THEMES & LAYOUT
+   THEMES (MIT FARBVORSCHAU) & ECHTE IPHONE-ANSICHT
    ========================================================= */
+function buildThemeMenuUI() {
+  const menu = document.getElementById('themeMenu');
+  if (!menu) return;
+
+  menu.innerHTML = Object.entries(THEMES).map(([key, t]) => `
+    <button type="button" class="theme-option-item" data-theme-key="${key}" onclick="changeTheme('${key}', true)">
+      <span class="theme-preview-dots">
+        <span class="dot" style="background:${t.colors[0]}"></span>
+        <span class="dot" style="background:${t.colors[1]}"></span>
+        <span class="dot" style="background:${t.colors[2]}"></span>
+      </span>
+      <span class="theme-option-label">${escapeHtml(t.label)}</span>
+    </button>
+  `).join('');
+}
+
+function toggleThemeMenu(event) {
+  event.stopPropagation();
+  const menu = document.getElementById('themeMenu');
+  if (menu) menu.classList.toggle('hidden');
+}
+
 function changeTheme(themeName, showNotification = true) {
-  document.documentElement.setAttribute('data-theme', themeName);
-  localStorage.setItem(THEME_KEY, themeName);
-  const select = document.getElementById('themeSelect');
-  if (select && select.value !== themeName) {
-    select.value = themeName;
+  const themeKey = THEMES[themeName] ? themeName : 'rose';
+  const themeObj = THEMES[themeKey];
+
+  document.documentElement.setAttribute('data-theme', themeKey);
+  localStorage.setItem(THEME_KEY, themeKey);
+
+  // Vorschau im Header-Button aktualisieren
+  const dotsEl = document.getElementById('currentThemeDots');
+  const labelEl = document.getElementById('currentThemeLabel');
+  if (dotsEl) {
+    dotsEl.innerHTML = `
+      <span class="dot" style="background:${themeObj.colors[0]}"></span>
+      <span class="dot" style="background:${themeObj.colors[1]}"></span>
+      <span class="dot" style="background:${themeObj.colors[2]}"></span>
+    `;
   }
+  if (labelEl) labelEl.textContent = themeObj.label;
+
+  // Aktiven Eintrag im Menü markieren
+  document.querySelectorAll('.theme-option-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-theme-key') === themeKey);
+  });
+
+  const menu = document.getElementById('themeMenu');
+  if (menu) menu.classList.add('hidden');
+
+  renderEmailPreview();
+
   if (showNotification) {
-    showToast('🎨 Farbschema aktualisiert!');
+    showToast(`🎨 Farbdesign „${themeObj.label}“ aktiviert!`);
   }
 }
 
-function toggleCompactLayout() {
-  const isCompact = document.body.classList.toggle('force-card-layout');
-  localStorage.setItem('semesterplan_compact_layout', isCompact ? 'true' : 'false');
-  showToast(isCompact ? '📱 Kompakte Kartenansicht aktiviert' : '📊 Klassische Tabellenansicht aktiviert');
+function toggleIphoneView() {
+  const isIphone = document.body.classList.toggle('iphone-view-mode');
+  localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
+  updateIphoneBtnState();
+  showToast(isIphone ? '📱 Echte iPhone-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
+}
+
+function updateIphoneBtnState() {
+  const btn = document.getElementById('iphoneViewBtn');
+  if (!btn) return;
+  const isIphone = document.body.classList.contains('iphone-view-mode');
+  btn.textContent = isIphone ? '💻 Desktop-Ansicht' : '📱 iPhone-Ansicht';
 }
 
 function switchTab(tabName) {
@@ -86,9 +174,13 @@ function switchTab(tabName) {
   document.getElementById('viewEmail').classList.toggle('hidden', tabName !== 'email');
   document.getElementById('tableFilters').classList.toggle('hidden', tabName !== 'table');
 
-  document.getElementById('tabBtnTable').classList.toggle('active', tabName === 'table');
-  document.getElementById('tabBtnFocus').classList.toggle('active', tabName === 'focus');
-  document.getElementById('tabBtnEmail').classList.toggle('active', tabName === 'email');
+  document.getElementById('tabBtnTable')?.classList.toggle('active', tabName === 'table');
+  document.getElementById('tabBtnFocus')?.classList.toggle('active', tabName === 'focus');
+  document.getElementById('tabBtnEmail')?.classList.toggle('active', tabName === 'email');
+
+  document.getElementById('iosTabTable')?.classList.toggle('active', tabName === 'table');
+  document.getElementById('iosTabFocus')?.classList.toggle('active', tabName === 'focus');
+  document.getElementById('iosTabEmail')?.classList.toggle('active', tabName === 'email');
 
   renderAll();
 }
@@ -280,7 +372,7 @@ function renderTable(stats) {
       if (filteredItems.length === 0) {
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}">
-            <span>–</span>
+            <span class="empty-dash">–</span>
             <button class="add-task-btn" onclick="openTaskModal(${wIdx}, '${escapeAttr(mod.shortName)}')">+ Aufgabe</button>
           </td>
         `;
@@ -314,10 +406,10 @@ function renderTable(stats) {
     });
 
     if (rowHasMatch) {
-      const currentBadge = isCurrentWeek ? `<br><span class="week-badge-current">📍 Aktuelle Woche</span>` : '';
+      const currentBadge = isCurrentWeek ? `<span class="week-badge-current">📍 Aktuelle Woche</span>` : '';
       rowsHtml += `
         <tr class="${rowClass}">
-          <td class="week-col">${escapeHtml(week.weekLabel)}${currentBadge}</td>
+          <td class="week-col"><span>${escapeHtml(week.weekLabel)}</span>${currentBadge}</td>
           ${cellsHtml}
         </tr>
       `;
@@ -332,7 +424,7 @@ function renderTable(stats) {
       <td>📊 Lernfortschritt (%)</td>
       ${visibleModules.map(m => {
         const s = stats.moduleStats[m.shortName];
-        return `<td>${s.pct} % (${s.completed}/${s.total})</td>`;
+        return `<td data-module="${escapeAttr(m.shortName)}">${s.pct} % (${s.completed}/${s.total})</td>`;
       }).join('')}
     </tr>
     <tr class="summary-bar-row">
@@ -340,7 +432,7 @@ function renderTable(stats) {
       ${visibleModules.map(m => {
         const s = stats.moduleStats[m.shortName];
         return `
-          <td>
+          <td data-module="${escapeAttr(m.shortName)}">
             <div class="progress-track">
               <div class="progress-fill" style="width: ${s.pct}%;"></div>
             </div>
@@ -572,7 +664,6 @@ function saveTaskFromModal() {
   const origItemStr = document.getElementById('editTaskItemIdx').value;
 
   if (origWeekStr !== '' && origItemStr !== '') {
-    // Bestehende Aufgabe aktualisieren
     const origWeekIdx = parseInt(origWeekStr, 10);
     const origItemIdx = parseInt(origItemStr, 10);
     const existingItem = appState.weeks[origWeekIdx]?.cells[origMod]?.[origItemIdx];
@@ -583,7 +674,6 @@ function saveTaskFromModal() {
       existingItem.syncCalendar = syncCalendar;
       existingItem.done = done;
 
-      // Falls Woche oder Modul geändert wurde -> verschieben
       if (origWeekIdx !== targetWeekIdx || origMod !== targetMod) {
         appState.weeks[origWeekIdx].cells[origMod].splice(origItemIdx, 1);
         appState.weeks[targetWeekIdx].cells[targetMod].push(existingItem);
@@ -601,7 +691,7 @@ function saveTaskFromModal() {
     }
   }
 
-  // Neue Aufgabe anlegen
+  // Neue Aufgabe anlegen (wird in Google Tasks als Unteraufgabe der Woche angelegt)
   const newItem = {
     text: cleanText,
     done: done,
@@ -654,63 +744,6 @@ function deleteTaskItem(weekIdx, shortName, itemIdx) {
   showToast('🗑️ Aufgabe gelöscht.');
 }
 
-/* =========================================================
-   CAD-TESTATE (1-5) IMPORT & BEREINIGUNG
-   ========================================================= */
-function importCADTestateInApp() {
-  const testateList = [];
-  for (let i = 1; i <= 5; i++) {
-    const val = document.getElementById(`testatDate${i}`)?.value;
-    if (val) {
-      const parts = val.split('-');
-      const dt = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
-      testateList.push({ title: `Testat ${i}`, dueDate: val, date: dt });
-    }
-  }
-
-  if (testateList.length === 0) {
-    showToast('⚠️ Bitte mindestens ein gültiges Datum eingeben.');
-    return;
-  }
-
-  // Alte Testate aus CAD entfernen (Erledigt-Status merken)
-  const doneStatusMap = {};
-  for (const week of appState.weeks) {
-    const cadItems = week.cells['CAD'] || [];
-    for (const item of cadItems) {
-      if (/^testat\s*\d+/i.test(item.text.trim())) {
-        doneStatusMap[item.text.trim().toLowerCase()] = item.done;
-      }
-    }
-    week.cells['CAD'] = cadItems.filter(item => !/^(\✅\s*)?(CAD:\s*)?testat\s*\d+/i.test(item.text.trim()));
-  }
-
-  testateList.sort((a, b) => a.date - b.date);
-
-  for (const t of testateList) {
-    let wIdx = findWeekIndexByDate(t.date);
-    if (wIdx === -1) {
-      wIdx = appState.weeks.length - 1; // Fallback auf Zusatzwoche
-    }
-    const newItem = {
-      text: t.title,
-      done: !!doneStatusMap[t.title.toLowerCase()],
-      dueDate: t.dueDate,
-      syncCalendar: true
-    };
-    appState.weeks[wIdx].cells['CAD'].push(newItem);
-  }
-
-  saveState();
-  renderAll();
-  closeModal('testatModal');
-  showToast('✅ 5 CAD-Testate erfolgreich zugeordnet!');
-
-  if (typeof syncWithGoogleTasksAPI === 'function' && typeof isGoogleConnected === 'function' && isGoogleConnected()) {
-    syncWithGoogleTasksAPI();
-  }
-}
-
 function syncAndClean() {
   const seenTestateGlobal = new Set();
   for (const week of appState.weeks) {
@@ -746,7 +779,7 @@ function syncAndClean() {
 }
 
 /* =========================================================
-   TAB 3: E-MAIL BRIEFING GENERATOR & VORSCHAU
+   TAB 3: E-MAIL BRIEFING GENERATOR (NUTZT AKTIVES FARBDESIGN)
    ========================================================= */
 function buildEmailHtmlObject() {
   const statsObj = calculateStats();
@@ -754,6 +787,13 @@ function buildEmailHtmlObject() {
   const selIdx = selEl ? (parseInt(selEl.value, 10) || 0) : 0;
   const week = appState.weeks[selIdx] || appState.weeks[0];
   const upcomingWeekLabel = week.weekLabel.replace(/\n/g, ' ');
+
+  const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
+  const themeObj = THEMES[currentThemeKey] || THEMES.rose;
+  const primaryColor = themeObj.colors[0];
+  const darkColor = themeObj.colors[1];
+  const lightBg = themeObj.light;
+  const borderCol = themeObj.border;
 
   let upcomingTasksHtml = '';
   let plainTextLines = [`DEIN SEMESTERPLAN-UPDATE: ${upcomingWeekLabel}`, '====================================', '', 'AUFGABEN DIESER WOCHE:'];
@@ -763,8 +803,8 @@ function buildEmailHtmlObject() {
     if (items.length > 0) {
       const itemsHtml = items.map(i => `<li>${i.done ? '✅ ' : '⬜ '}${escapeHtml(i.text)}${i.dueDate ? ` (Fällig: ${formatIsoDateDE(i.dueDate)})` : ''}</li>`).join('');
       upcomingTasksHtml += `
-        <div style="margin-bottom: 14px; padding: 12px; background-color: #F9EFEF; border-left: 4px solid #C66A7A; border-radius: 4px;">
-          <strong style="color: #8E3A49; font-size: 15px;">${escapeHtml(mod.shortName)} (${escapeHtml(mod.fullName)})</strong>
+        <div style="margin-bottom: 14px; padding: 12px; background-color: ${lightBg}; border-left: 4px solid ${primaryColor}; border-radius: 6px;">
+          <strong style="color: ${darkColor}; font-size: 15px;">${escapeHtml(mod.shortName)} (${escapeHtml(mod.fullName)})</strong>
           <ul style="margin: 8px 0 0 0; padding-left: 20px; color: #333;">${itemsHtml}</ul>
         </div>`;
 
@@ -803,26 +843,26 @@ function buildEmailHtmlObject() {
           <strong>${escapeHtml(s.shortName)}</strong>
           <span>${s.pct} % (${s.completed}/${s.total} erledigt)</span>
         </div>
-        <div style="width: 100%; background-color: #F0E1E4; border-radius: 6px; height: 10px; overflow: hidden;">
-          <div style="width: ${s.pct}%; background-color: #C66A7A; height: 10px;"></div>
+        <div style="width: 100%; background-color: ${borderCol}; border-radius: 6px; height: 10px; overflow: hidden;">
+          <div style="width: ${s.pct}%; background-color: ${primaryColor}; height: 10px;"></div>
         </div>
       </div>`;
   }
 
   const htmlBody = `
-    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; border: 1px solid #E5E7E9; border-radius: 8px; overflow: hidden; background: #FFFFFF;">
-      <div style="background-color: #C66A7A; color: #FFFFFF; padding: 18px 24px;">
+    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; border: 1px solid ${borderCol}; border-radius: 10px; overflow: hidden; background: #FFFFFF;">
+      <div style="background: linear-gradient(135deg, ${primaryColor} 0%, ${darkColor} 100%); color: #FFFFFF; padding: 18px 24px;">
         <h2 style="margin: 0; font-size: 20px;">🎓 Dein Semesterplan-Briefing</h2>
         <p style="margin: 4px 0 0 0; opacity: 0.9; font-size: 14px;">${escapeHtml(upcomingWeekLabel)}</p>
       </div>
       <div style="padding: 20px 24px; color: #2C3E50;">
-        <h3 style="margin-top: 0; color: #C66A7A; border-bottom: 1px solid #F2D7DB; padding-bottom: 6px;">📅 Aufgaben für diese Woche</h3>
+        <h3 style="margin-top: 0; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">📅 Aufgaben für diese Woche</h3>
         ${upcomingTasksHtml}
-        <h3 style="margin-top: 24px; color: #C66A7A; border-bottom: 1px solid #F2D7DB; padding-bottom: 6px;">📊 Dein aktueller Gesamt-Lernfortschritt (${statsObj.overallPct} %)</h3>
+        <h3 style="margin-top: 24px; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">📊 Dein aktueller Gesamt-Lernfortschritt (${statsObj.overallPct} %)</h3>
         ${progressHtml}
         ${overdueTasksHtml ? `
           <h3 style="margin-top: 24px; color: #B03A2E; border-bottom: 1px solid #F5B7B1; padding-bottom: 6px;">⚠️ Noch offen aus Vorwochen</h3>
-          <div style="background-color: #FDEDEC; padding: 12px; border-radius: 4px; font-size: 13px; color: #2C3E50;">
+          <div style="background-color: #FDEDEC; padding: 12px; border-radius: 6px; font-size: 13px; color: #2C3E50;">
             ${overdueTasksHtml}
           </div>
         ` : ''}
@@ -843,42 +883,103 @@ function renderEmailPreview() {
   container.innerHTML = htmlBody;
 }
 
-function openEmailPreview() {
-  switchTab('email');
-  showToast('📧 Wochen-Briefing Vorschau geöffnet.');
-}
-
 function triggerMailtoFallback() {
   const { subject, plainText } = buildEmailHtmlObject();
   window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(plainText)}`;
 }
 
 /* =========================================================
-   EXPORT, BACKUP & RESET
+   FARBIGER PDF-EXPORT MIT VORSCHAU-MODAL (OHNE DIREKTDRUCK)
    ========================================================= */
-function exportCSV() {
-  const headers = ['Woche', ...appState.modules.map(m => m.fullName)];
-  const rows = [headers];
+function openPdfModal() {
+  const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
+  const themeObj = THEMES[currentThemeKey] || THEMES.rose;
+  const labelEl = document.getElementById('pdfThemeNameLabel');
+  if (labelEl) labelEl.textContent = themeObj.label;
 
-  for (const week of appState.weeks) {
-    const row = [week.weekLabel.replace(/\n/g, ' ')];
-    for (const mod of appState.modules) {
-      const items = week.cells[mod.shortName] || [];
-      const text = items.map(i => `${i.done ? '✅ ' : ''}${i.text}`).join(' | ') || '-';
-      row.push(text);
-    }
-    rows.push(row);
-  }
-
-  const csvContent = '\uFEFF' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = 'Semesterplan_WiSe26_27.csv';
-  link.click();
-  showToast('💾 CSV-Datei heruntergeladen!');
+  updatePdfPreview();
+  openModal('pdfModal');
 }
 
+function updatePdfPreview() {
+  const previewBox = document.getElementById('pdfPreviewBox');
+  if (!previewBox) return;
+
+  const includeDashboard = document.getElementById('pdfIncludeDashboard')?.checked !== false;
+  const compactMode = document.getElementById('pdfCompactMode')?.checked === true;
+  const stats = calculateStats();
+
+  const dashboardClone = includeDashboard
+    ? `<div class="dashboard-grid" style="margin-bottom: 16px;">${document.getElementById('dashboardCards')?.innerHTML || ''}</div>`
+    : '';
+
+  const tableClone = document.getElementById('viewTable')?.outerHTML || '';
+
+  previewBox.className = `pdf-preview-box ${compactMode ? 'pdf-compact-cards' : ''}`;
+  previewBox.innerHTML = `
+    <div id="pdfRenderTarget" class="pdf-render-target">
+      <div class="pdf-custom-header">
+        <div>
+          <h2>🎓 Semesterplan – WiSe 26/27</h2>
+          <p>Gesamtfortschritt: ${stats.overallPct} % (${stats.overallCompleted} von ${stats.overallTotal} Aufgaben erledigt)</p>
+        </div>
+        <span class="pdf-date-stamp">Stand: ${formatDateDE(new Date())}</span>
+      </div>
+      ${dashboardClone}
+      ${tableClone}
+    </div>
+  `;
+}
+
+async function downloadThemedPdfFile() {
+  const target = document.getElementById('pdfRenderTarget');
+  const btn = document.getElementById('downloadPdfBtn');
+  if (!target) return;
+
+  if (typeof html2pdf === 'undefined') {
+    showToast('ℹ️ PDF-Generator lädt noch, nutze System-Farbdruck...');
+    printWithThemeColors();
+    return;
+  }
+
+  const origText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Farb-PDF wird erstellt...';
+  }
+
+  try {
+    const bgPage = getComputedStyle(document.documentElement).getPropertyValue('--bg-page').trim() || '#FAF6F6';
+    const opt = {
+      margin: [8, 8, 8, 8],
+      filename: `Semesterplan_WiSe26_27_${new Date().toISOString().slice(0, 10)}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: bgPage },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+    };
+
+    await html2pdf().set(opt).from(target).save();
+    closeModal('pdfModal');
+    showToast('✅ Farbiges PDF erfolgreich heruntergeladen!');
+  } catch (e) {
+    console.error('PDF Export Fehler:', e);
+    printWithThemeColors();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+}
+
+function printWithThemeColors() {
+  closeModal('pdfModal');
+  setTimeout(() => window.print(), 200);
+}
+
+/* =========================================================
+   JSON BACKUP EXPORT & IMPORT
+   ========================================================= */
 function exportJSONBackup() {
   const dataStr = JSON.stringify(appState, null, 2);
   const blob = new Blob([dataStr], { type: 'application/json' });
@@ -911,15 +1012,6 @@ function importJSONBackup(event) {
     }
   };
   reader.readAsText(file);
-}
-
-function resetToOriginal() {
-  if (!confirm('Möchtest du den gesamten Semesterplan wirklich auf den Ursprungszustand zurücksetzen?')) return;
-  appState = JSON.parse(JSON.stringify(INITIAL_DATA));
-  appState.deletedGoogleTaskIds = [];
-  saveState();
-  renderAll();
-  showToast('↺ Plan auf Ursprungszustand zurückgesetzt.');
 }
 
 /* =========================================================
