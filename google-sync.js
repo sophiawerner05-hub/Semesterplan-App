@@ -1,6 +1,6 @@
 /* =========================================================
    DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
-   - Kompakte Benennung OHNE Wochenzahl & OHNE Emojis:
+   - Kompakte Benennung OHNE Wochenzahl, OHNE eckige Klammern & OHNE Emojis:
      Format: "ModSim: Vorlesung: V2 – Teil 1..."
    - Keine platzraubenden "Woche X"-Oberaufgaben im Kalender
    - Alle Aufgaben werden am MONTAG der jeweiligen Woche im
@@ -75,6 +75,7 @@ function initGoogleSyncSettingsUI() {
   if (calCheck) {
     calCheck.checked = localStorage.getItem('semesterplan_sync_calendar') !== 'false';
   }
+
   const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
   const savedExpiry = parseInt(localStorage.getItem(TOKEN_EXPIRY_KEY) || '0', 10);
   if (savedToken && Date.now() < savedExpiry) {
@@ -86,6 +87,7 @@ function initGoogleSyncSettingsUI() {
       await checkAndSendWeeklyAutoEmail();
     }, 600);
   }
+
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && isGoogleConnected()) {
       syncWithGoogleTasksAPI(true);
@@ -175,6 +177,7 @@ async function googleApiFetch(url, options = {}) {
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
     googleAccessToken = null;
+    cachedListMap = {};
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     localStorage.removeItem(TOKEN_EXPIRY_KEY);
     updateGoogleConnectedUI(false);
@@ -203,11 +206,18 @@ async function fetchAllGoogleTasks(listId) {
   return allItems;
 }
 
-async function ensureModuleTaskLists() {
+async function ensureModuleTaskLists(forceRefresh = false) {
+  if (!forceRefresh && Object.keys(cachedListMap).length === appState.modules.length) {
+    return cachedListMap;
+  }
   const listsData = await googleApiFetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100');
   const existingLists = listsData.items || [];
   const listMap = {};
-  existingLists.forEach(l => listMap[l.title.trim()] = l.id);
+  existingLists.forEach(l => {
+    const cleanTitle = l.title.trim().replace(/^\[|\]$/g, '');
+    listMap[cleanTitle] = l.id;
+  });
+
   for (const mod of appState.modules) {
     if (!listMap[mod.shortName]) {
       const createdList = await googleApiFetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists', {
@@ -223,7 +233,7 @@ async function ensureModuleTaskLists() {
 
 /* =========================================================
    MONTAGS-BERECHNUNG & PLATZSPARENDE BENENNUNG
-   (KEINE WOCHENZAHL & KEINE EMOJIS IN KALENDER / TASKS)
+   (OHNE WOCHENZAHL, OHNE ECKIGE KLAMMERN & OHNE EMOJIS)
    ========================================================= */
 function getWeekMondayIso(weekIdx) {
   const week = appState.weeks[weekIdx];
@@ -238,33 +248,34 @@ function getWeekMondayIso(weekIdx) {
   )).toISOString();
 }
 
-function stripAllEmojis(str) {
+function stripAllEmojisAndBrackets(str) {
   return String(str ?? '')
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, '')
+    .replace(/\[([^\]]+)\]/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function extractCleanTaskDescription(shortName, rawText) {
-  const withoutEmojis = stripAllEmojis(rawText);
+  const withoutEmojis = stripAllEmojisAndBrackets(rawText);
   return withoutEmojis
-    .replace(new RegExp(`^\\[?${shortName}\\]?\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
+    .replace(new RegExp(`^${shortName}\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
     .replace(/^\(?\s*Woche\s*\d+[^)]*\)?:?\s*/i, '')
     .trim();
 }
 
 function buildCleanGoogleTitle(shortName, rawText) {
   const cleanText = extractCleanTaskDescription(shortName, rawText);
-  const cleanMod = stripAllEmojis(shortName);
+  const cleanMod = stripAllEmojisAndBrackets(shortName);
   return `${cleanMod}: ${cleanText}`;
 }
 
 function isLegacyWeekHeaderTask(gTask, shortName) {
   if (!gTask) return false;
-  if (gTask.notes && gTask.notes.includes('[WocheParent:')) return true;
+  if (gTask.notes && gTask.notes.includes('WocheParent:')) return true;
   const rawTitle = (gTask.title || '').trim();
-  const cleanTitle = stripAllEmojis(rawTitle);
-  if (/^(\[[^\]]+\]\s*)?woche\s*(\d+|zusatz)/i.test(cleanTitle)) return true;
+  const cleanTitle = stripAllEmojisAndBrackets(rawTitle);
+  if (/^([a-z0-9äöüß\s]+:?\s*)?woche\s*(\d+|zusatz)/i.test(cleanTitle)) return true;
   if (cleanTitle.toLowerCase() === shortName.toLowerCase() && gTask.notes && gTask.notes.includes('Oberaufgabe')) return true;
   return false;
 }
@@ -275,8 +286,8 @@ function buildTaskPayload(weekIdx, shortName, item) {
   const mondayDueIso = getWeekMondayIso(weekIdx);
   const sundayStr = parsed ? formatDateDE(parsed.weekSun) : '';
   const mondayStr = parsed ? formatDateDE(parsed.weekMon) : '';
-
   let dueIso = mondayDueIso;
+
   if (item.dueDate && parsed) {
     const sunIsoDay = `${parsed.weekSun.getFullYear()}-${String(parsed.weekSun.getMonth() + 1).padStart(2, '0')}-${String(parsed.weekSun.getDate()).padStart(2, '0')}`;
     if (item.dueDate !== sunIsoDay) {
@@ -289,7 +300,7 @@ function buildTaskPayload(weekIdx, shortName, item) {
 
   return {
     title: buildCleanGoogleTitle(shortName, item.text),
-    notes: `Modul: ${shortName} | Montag: ${mondayStr}${sundayStr ? ` (bis ${sundayStr})` : ''} [WocheID:${week.id}]`,
+    notes: `Modul: ${shortName} | Montag: ${mondayStr}${sundayStr ? ` (bis ${sundayStr})` : ''} | WocheID:${week.id}`,
     due: dueIso,
     status: item.done ? 'completed' : 'needsAction'
   };
@@ -300,9 +311,10 @@ function buildTaskPayload(weekIdx, shortName, item) {
    ========================================================= */
 async function pushSingleTaskToggleToGoogle(weekIdx, shortName, item) {
   try {
-    if (!cachedListMap[shortName]) await ensureModuleTaskLists();
+    await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
+
     if (item.googleTaskId) {
       await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${item.googleTaskId}`, {
         method: 'PATCH',
@@ -324,9 +336,10 @@ async function pushSingleTaskToggleToGoogle(weekIdx, shortName, item) {
 
 async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
   try {
-    if (!cachedListMap[shortName]) await ensureModuleTaskLists();
+    await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
+
     const payload = buildTaskPayload(weekIdx, shortName, item);
     const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
       method: 'POST',
@@ -336,11 +349,12 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
     delete item.parentTaskId;
     item.lastSyncedDone = item.done;
     item.lastSyncedText = item.text;
+
     if (item.syncCalendar !== false) {
       await createOrUpdateCalendarEvent(weekIdx, shortName, item);
     }
     saveState();
-    showToast('☁️ Ohne Wochenzahl & ohne Emojis in Google Tasks & Kalender gespeichert!');
+    showToast('☁️ In Google Tasks & Kalender gespeichert!');
   } catch (e) {
     console.error(e);
   }
@@ -348,9 +362,10 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
 
 async function pushSingleTaskMoveOrEditToGoogle(weekIdx, shortName, item) {
   try {
-    if (!cachedListMap[shortName]) await ensureModuleTaskLists();
+    await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
+
     const payload = buildTaskPayload(weekIdx, shortName, item);
     if (item.googleTaskId) {
       await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${item.googleTaskId}`, {
@@ -362,6 +377,7 @@ async function pushSingleTaskMoveOrEditToGoogle(weekIdx, shortName, item) {
     } else {
       await pushSingleTaskCreateToGoogle(weekIdx, shortName, item);
     }
+
     if (item.syncCalendar !== false) {
       await createOrUpdateCalendarEvent(weekIdx, shortName, item);
     }
@@ -373,7 +389,7 @@ async function pushSingleTaskMoveOrEditToGoogle(weekIdx, shortName, item) {
 
 async function deleteSingleTaskFromGoogle(shortName, googleTaskId) {
   try {
-    if (!cachedListMap[shortName]) await ensureModuleTaskLists();
+    await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId || !googleTaskId) return;
     await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${googleTaskId}`, {
@@ -394,10 +410,10 @@ async function syncWithGoogleTasksAPI(silent = false) {
   }
   if (isSyncInProgress) return;
   isSyncInProgress = true;
-  if (!silent) showToast('🔄 Synchronisiere Aufgaben (ohne Wochenzahlen & ohne Emojis)...');
+  if (!silent) showToast('🔄 Synchronisiere Aufgaben mit Google...');
 
   try {
-    const listMap = await ensureModuleTaskLists();
+    const listMap = await ensureModuleTaskLists(true);
 
     if (Array.isArray(appState.deletedGoogleTaskIds) && appState.deletedGoogleTaskIds.length > 0) {
       for (const delEntry of appState.deletedGoogleTaskIds) {
@@ -423,7 +439,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
       const deletedTaskIds = new Set(allRawTasks.filter(t => t.deleted).map(t => t.id));
       let activeGoogleTasks = allRawTasks.filter(t => !t.deleted && (t.title || '').trim() !== '');
 
-      // 1. Alte platzraubende Wochen-Oberaufgaben ("📅 [ModSim] Woche X") identifizieren
+      // 1. Alte Wochen-Oberaufgaben identifizieren und bereinigen
       const legacyParentIds = new Set();
       for (const gTask of activeGoogleTasks) {
         if (isLegacyWeekHeaderTask(gTask, shortName)) {
@@ -431,7 +447,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
         }
       }
 
-      // Unteraufgaben von alten Wochen-Oberaufgaben auf oberste Ebene holen, damit sie beim Löschen der Oberaufgabe erhalten bleiben
       if (legacyParentIds.size > 0) {
         for (const gTask of activeGoogleTasks) {
           if (gTask.parent && legacyParentIds.has(gTask.parent)) {
@@ -443,7 +458,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
             } catch (e) {}
           }
         }
-        // Alte Wochen-Oberaufgaben löschen, damit sie keinen Platz mehr im Kalender einnehmen
         for (const parentId of legacyParentIds) {
           try {
             await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${parentId}`, {
@@ -462,7 +476,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
       const matchedGoogleTaskIds = new Set();
 
-      // 2. Alle Wochen-Aufgaben abgleichen, von Wochenzahlen/Emojis befreien und auf Montag datieren
+      // 2. Alle Wochen-Aufgaben abgleichen, von Klammern/Wochenzahlen/Emojis befreien und auf Montag datieren
       for (let wIdx = 0; wIdx < appState.weeks.length; wIdx++) {
         const week = appState.weeks[wIdx];
         const parsed = parseWeekDates(week.weekLabel);
@@ -484,7 +498,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
               if (matchedGoogleTaskIds.has(t.id) || !t.title) return false;
               const tDesc = extractCleanTaskDescription(shortName, t.title);
               if (tDesc.toLowerCase() !== cleanText.toLowerCase()) return false;
-              if (t.notes && (t.notes.includes(`[WocheID:${week.id}]`) || (sundayStr && t.notes.includes(sundayStr)))) {
+              if (t.notes && (t.notes.includes(`WocheID:${week.id}`) || (sundayStr && t.notes.includes(sundayStr)))) {
                 return true;
               }
               return true;
@@ -538,7 +552,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
             item.lastSyncedText = item.text;
           }
 
-          // Falls ein verknüpftes Google-Kalender-Event existiert, ebenfalls ohne Wochenzahl & ohne Emojis aktualisieren
           if (item.googleEventId && item.syncCalendar !== false) {
             await createOrUpdateCalendarEvent(wIdx, shortName, item);
           }
@@ -555,7 +568,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
         let targetWeekIdx = -1;
         if (gTask.notes) {
-          const idMatch = gTask.notes.match(/\[WocheID:(week_\d+)\]/);
+          const idMatch = gTask.notes.match(/WocheID:(week_\d+)/);
           if (idMatch) {
             targetWeekIdx = appState.weeks.findIndex(w => w.id === idMatch[1]);
           }
@@ -594,8 +607,9 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
     saveState();
     renderAll();
+
     if (!silent) {
-      showToast('✅ Sync fertig! Alle Kalender- & Task-Einträge ohne Wochenzahl & ohne Emojis.');
+      showToast('✅ Sync abgeschlossen!');
     } else if (statusChangedFromGoogleCount > 0 || importedFromGoogleCount > 0) {
       showToast('☁️ Änderungen aus Google Tasks automatisch übernommen!');
     }
@@ -614,7 +628,7 @@ async function forceFullResync() {
 
 /* =========================================================
    GOOGLE KALENDER INTEGRATION
-   (OHNE WOCHENZAHL & OHNE EMOJIS IM TITEL)
+   (OHNE WOCHENZAHL, OHNE ECKIGE KLAMMERN & OHNE EMOJIS IM TITEL)
    ========================================================= */
 async function createOrUpdateCalendarEvent(weekIdx, shortName, item) {
   if (!googleAccessToken) return;
@@ -627,7 +641,7 @@ async function createOrUpdateCalendarEvent(weekIdx, shortName, item) {
 
     const eventPayload = {
       summary: cleanSummary,
-      description: `Semesterplan-Aufgabe für ${stripAllEmojis(shortName)}`,
+      description: `Semesterplan-Aufgabe für ${stripAllEmojisAndBrackets(shortName)}`,
       start: { date: startDate },
       end: { date: endDate }
     };
@@ -678,6 +692,7 @@ async function syncEventsFromGoogleCalendar() {
 
       const rawDateStr = ev.start?.date || (ev.start?.dateTime ? ev.start.dateTime.slice(0, 10) : null);
       if (!rawDateStr) continue;
+
       const p = rawDateStr.split('-');
       const eventDate = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 12, 0, 0);
       const weekIdx = findWeekIndexByDate(eventDate);
@@ -687,7 +702,6 @@ async function syncEventsFromGoogleCalendar() {
       if (!cleanTitle) continue;
 
       const expectedSummary = buildCleanGoogleTitle(matchedMod, cleanTitle);
-      // Falls das Kalender-Event noch eine alte Wochenzahl oder ein Emoji im Titel hatte, direkt bereinigen
       if (rawSummary !== expectedSummary) {
         try {
           await googleApiFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${ev.id}`, {
@@ -763,6 +777,7 @@ async function sendBriefingViaGmailAPI(silent = false) {
     const nowStr = formatDateDE(new Date());
     localStorage.setItem('semesterplan_last_auto_email_date', nowStr);
     renderEmailPreview();
+
     if (!silent) {
       showToast('✅ Wochen-Briefing erfolgreich an dein Gmail-Postfach gesendet!');
     }
@@ -780,11 +795,15 @@ async function sendBriefingViaGmailAPI(silent = false) {
 async function checkAndSendWeeklyAutoEmail() {
   if (!googleAccessToken) return;
   if (localStorage.getItem('semesterplan_auto_weekly_email') === 'false') return;
+
   const now = new Date();
   const currentWeekIdx = findWeekIndexByDate(now);
-  const weekKey = currentWeekIdx !== -1 ? `week_${currentWeekIdx}` : `iso_${now.getFullYear()}_${now.getMonth()}_${Math.floor(now.getDate() / 7)}`;
+  const weekKey = currentWeekIdx !== -1
+    ? `week_${currentWeekIdx}`
+    : `iso_${now.getFullYear()}_${now.getMonth()}_${Math.floor(now.getDate() / 7)}`;
   const targetKey = now.getDay() === 0 ? `${weekKey}_sun_preview` : `${weekKey}_weekly`;
   const lastSentKey = localStorage.getItem('semesterplan_last_auto_email_week_key');
+
   if (lastSentKey === targetKey) return;
 
   const sentOk = await sendBriefingViaGmailAPI(true);

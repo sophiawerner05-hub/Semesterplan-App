@@ -1,12 +1,10 @@
 /* =========================================================
    HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
-   - Ohne "Mo, Datum"-Badge bei einzelnen Aufgaben
-   - Direkter Zugriff auf dazugehörige Dokumente (Vorschau & Upload)
-     direkt in der Aufgaben-Übersicht (Tabelle & Wochen-Fokus)
-   - Status "Angefangen" (inProgress) für Aufgaben
-   - Intelligente Wochen- & Kategorie-Einsortierung beim Datei-Upload
-     inkl. Rückfrage/Bestätigung für jedes einzelne Dokument
-   - Dokumenten-Kategorie "Lösungen" & 5 dunkle Farbschemata
+   - Aktuelle Kalenderwoche auf dem Handy automatisch ganz oben
+   - 3-Punkte-Menü (⋮) für alle Aufgaben-Bearbeitungsoptionen
+   - Volle Textbreite für Aufgaben & Dokument-Chips
+   - Module niemals mit eckigen Klammern
+   - Fehlerfreie Dokumenten-Upload- & Speicher-Ansicht (inkl. formatFileSize)
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -48,10 +46,8 @@ let pendingUploadPlans = [];
 
 async function initApp() {
   loadState();
-  document.getElementById('dragHintBanner')?.remove();
-  ensureExtendedUIElements();
-
   buildThemeMenuUI();
+
   const savedTheme = localStorage.getItem(THEME_KEY) || 'rose';
   changeTheme(savedTheme, false);
 
@@ -71,58 +67,15 @@ async function initApp() {
   renderAll();
 
   document.addEventListener('click', (e) => {
-    const container = document.getElementById('themeDropdownContainer');
-    const menu = document.getElementById('themeMenu');
-    if (container && menu && !container.contains(e.target)) {
-      menu.classList.add('hidden');
+    const themeContainer = document.getElementById('themeDropdownContainer');
+    const themeMenu = document.getElementById('themeMenu');
+    if (themeContainer && themeMenu && !themeContainer.contains(e.target)) {
+      themeMenu.classList.add('hidden');
+    }
+    if (!e.target.closest('.task-menu-wrapper')) {
+      closeAllTaskActionMenus();
     }
   });
-}
-
-function ensureExtendedUIElements() {
-  const statusFilter = document.getElementById('statusFilter');
-  if (statusFilter && !statusFilter.querySelector('option[value="in_progress"]')) {
-    const opt = document.createElement('option');
-    opt.value = 'in_progress';
-    opt.textContent = '⏳ Nur angefangene';
-    const openOpt = statusFilter.querySelector('option[value="open"]');
-    if (openOpt && openOpt.nextSibling) {
-      statusFilter.insertBefore(opt, openOpt.nextSibling);
-    } else {
-      statusFilter.appendChild(opt);
-    }
-  }
-
-  const doneCheck = document.getElementById('taskDoneCheck');
-  if (doneCheck && !document.getElementById('taskInProgressCheck')) {
-    const group = doneCheck.closest('.checkbox-group');
-    if (group) {
-      const label = document.createElement('label');
-      label.className = 'checkbox-label';
-      label.innerHTML = `
-        <input type="checkbox" id="taskInProgressCheck" onchange="if(this.checked) document.getElementById('taskDoneCheck').checked = false;">
-        <span>Aufgabe bereits angefangen / in Bearbeitung (⏳)</span>
-      `;
-      group.insertBefore(label, doneCheck.closest('label'));
-      doneCheck.addEventListener('change', function() {
-        if (this.checked) {
-          const inProg = document.getElementById('taskInProgressCheck');
-          if (inProg) inProg.checked = false;
-        }
-      });
-    }
-  }
-
-  const fileInput = document.getElementById('docFileInput');
-  if (fileInput) {
-    fileInput.onchange = handleDocFilesSelected;
-    if (!document.getElementById('docSmartPreviewList')) {
-      const previewContainer = document.createElement('div');
-      previewContainer.id = 'docSmartPreviewList';
-      previewContainer.className = 'smart-sort-preview-list';
-      fileInput.parentElement.appendChild(previewContainer);
-    }
-  }
 }
 
 function updateIosClock() {
@@ -130,6 +83,14 @@ function updateIosClock() {
   if (!el) return;
   const now = new Date();
   el.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+function stripModuleBracketsFromText(text, shortName = '') {
+  let cleaned = String(text ?? '').trim();
+  if (shortName) {
+    cleaned = cleaned.replace(new RegExp(`^\\[\\s*${shortName}\\s*\\]\\s*:?\\s*`, 'i'), '');
+  }
+  return cleaned.replace(/^\[[^\]]+\]\s*:?\s*/, '').trim();
 }
 
 function loadState() {
@@ -147,6 +108,15 @@ function loadState() {
         appState = parsed;
         if (!Array.isArray(appState.deletedGoogleTaskIds)) {
           appState.deletedGoogleTaskIds = [];
+        }
+        // Eventuelle alte eckige Modul-Klammern bereinigen
+        for (const week of appState.weeks) {
+          for (const mod of appState.modules) {
+            const list = week.cells[mod.shortName] || [];
+            list.forEach(item => {
+              item.text = stripModuleBracketsFromText(item.text, mod.shortName);
+            });
+          }
         }
         return;
       }
@@ -169,6 +139,56 @@ function saveState() {
   } catch (e) {
     console.error('Fehler beim Speichern im localStorage:', e);
   }
+}
+
+/* =========================================================
+   3-PUNKTE-MENÜ (⋮) FÜR AUFGABEN-AKTIONEN
+   ========================================================= */
+function closeAllTaskActionMenus() {
+  document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.task-menu-btn.active').forEach(el => el.classList.remove('active'));
+}
+
+function toggleTaskActionMenu(event, menuId) {
+  event.stopPropagation();
+  const menu = document.getElementById(menuId);
+  if (!menu) return;
+  const isAlreadyOpen = menu.classList.contains('open');
+  closeAllTaskActionMenus();
+  if (!isAlreadyOpen) {
+    menu.classList.add('open');
+    event.currentTarget.classList.add('active');
+  }
+}
+
+function buildTaskActionMenuHtml(wIdx, shortName, idx, item, prefix = 'tbl') {
+  const menuId = `taskMenu_${prefix}_${wIdx}_${shortName.replace(/\s+/g, '')}_${idx}`;
+  const inProgLabel = item.inProgress && !item.done ? '⬜ „Angefangen“ aufheben' : '⏳ Als angefangen markieren';
+  return `
+    <div class="task-menu-wrapper">
+      <button type="button" class="task-menu-btn" title="Optionen" onclick="toggleTaskActionMenu(event, '${escapeAttr(menuId)}')">⋮</button>
+      <div class="task-dropdown-menu" id="${escapeAttr(menuId)}" onclick="event.stopPropagation()">
+        <button type="button" class="task-menu-item" onclick="closeAllTaskActionMenus(); openUploadDocForTask(${wIdx}, '${escapeAttr(shortName)}', ${idx}, event)">
+          <span>📎</span> <span>Dokument zuordnen</span>
+        </button>
+        <button type="button" class="task-menu-item" onclick="closeAllTaskActionMenus(); toggleTaskInProgress(${wIdx}, '${escapeAttr(shortName)}', ${idx})">
+          <span>${inProgLabel}</span>
+        </button>
+        <button type="button" class="task-menu-item" onclick="closeAllTaskActionMenus(); moveTaskOrder(${wIdx}, '${escapeAttr(shortName)}', ${idx}, -1)">
+          <span>↑</span> <span>Nach oben verschieben</span>
+        </button>
+        <button type="button" class="task-menu-item" onclick="closeAllTaskActionMenus(); moveTaskOrder(${wIdx}, '${escapeAttr(shortName)}', ${idx}, 1)">
+          <span>↓</span> <span>Nach unten verschieben</span>
+        </button>
+        <button type="button" class="task-menu-item" onclick="closeAllTaskActionMenus(); openEditTaskModal(${wIdx}, '${escapeAttr(shortName)}', ${idx})">
+          <span>✏️</span> <span>Aufgabe bearbeiten</span>
+        </button>
+        <button type="button" class="task-menu-item danger-item" onclick="closeAllTaskActionMenus(); deleteTaskItem(${wIdx}, '${escapeAttr(shortName)}', ${idx})">
+          <span>🗑️</span> <span>Aufgabe löschen</span>
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 /* =========================================================
@@ -206,8 +226,7 @@ function buildThemeMenuUI() {
 
 function toggleThemeMenu(event) {
   event.stopPropagation();
-  const menu = document.getElementById('themeMenu');
-  if (menu) menu.classList.toggle('hidden');
+  document.getElementById('themeMenu')?.classList.toggle('hidden');
 }
 
 function changeTheme(themeName, showNotification = true) {
@@ -242,7 +261,7 @@ function toggleIphoneView() {
   const isIphone = document.body.classList.toggle('iphone-view-mode');
   localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
   updateIphoneBtnState();
-  showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
+  showToast(isIphone ? '📱 Handy-Ansicht aktiviert (Aktuelle Woche steht oben)' : '💻 Desktop-Tabellenansicht aktiviert');
 }
 
 function updateIphoneBtnState() {
@@ -285,8 +304,15 @@ function openModuleDocsDirectly(shortName, event) {
 }
 
 /* =========================================================
-   DATUM-HILFSFUNKTIONEN
+   DATUM- & DATEIGRÖSSEN-HILFSFUNKTIONEN
    ========================================================= */
+function formatFileSize(bytes) {
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 function parseWeekDates(weekLabel) {
   if (!weekLabel) return null;
   const regex = /(\d{2})\.(\d{2})\.(?:(\d{4}))?\s*[–\-]\s*(\d{2})\.(\d{2})\.(\d{4})/;
@@ -348,8 +374,23 @@ function findWeekIndexByDate(dateObj) {
 }
 
 /* =========================================================
-   DOKUMENTEN-VERKNÜPFUNG FÜR AUFGABEN & WOCHENZELLEN
+   INTELLIGENTE DOKUMENTEN-VERKNÜPFUNG (INKL. FÜHRENDE NULLEN)
    ========================================================= */
+function normalizeToken(rawToken) {
+  const s = String(rawToken || '')
+    .toLowerCase()
+    .replace(/ueb|^ü(?=\s*\d)/, 'üb')
+    .replace(/hsu/, 'hsü')
+    .replace(/\s+/g, '');
+  if (/^2-\d{2}$/.test(s)) return s;
+  return s.replace(/([a-zäöüß]+)0+(\d+)/g, '$1$2');
+}
+
+function extractNormalizedTokens(str) {
+  const tokenRegex = /\b(v\s*0*\d+|le\s*0*\d+|üb\s*0*\d+|ueb\s*0*\d+|ü\s*0*\d+|hsü\s*0*\d+|hsu\s*0*\d+|testat\s*0*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
+  return (String(str || '').match(tokenRegex) || []).map(normalizeToken);
+}
+
 function getDocsForTask(weekIdx, shortName, taskText) {
   if (!Array.isArray(cachedDocsList) || cachedDocsList.length === 0) return [];
   const week = appState.weeks[weekIdx];
@@ -358,11 +399,7 @@ function getDocsForTask(weekIdx, shortName, taskText) {
   const modDocs = cachedDocsList.filter(d => d.module === shortName);
   if (modDocs.length === 0) return [];
 
-  const tokenRegex = /\b(v\s*\d+|le\s*\d+|üb\s*\d+|ueb\s*\d+|ü\s*\d+|hsü\s*\d+|hsu\s*\d+|testat\s*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
-  const taskTokens = (taskText.match(tokenRegex) || []).map(t =>
-    t.toLowerCase().replace(/ueb|^ü(?=\s*\d)/, 'üb').replace(/hsu/, 'hsü').replace(/\s+/g, '')
-  );
-
+  const taskTokens = extractNormalizedTokens(taskText);
   const taskLower = taskText.toLowerCase();
   const isVorlesung = taskLower.includes('vorlesung') || /\b(v\s*\d+|le\s*\d+|2-\d{2})\b/i.test(taskText);
   const isUebung = /\b(übung|uebung|üb\s*\d+|aufgabensammlung)\b/i.test(taskText) && !taskLower.includes('hörsaal');
@@ -370,15 +407,16 @@ function getDocsForTask(weekIdx, shortName, taskText) {
   const isTestat = /\b(testat|praktikum|selfassessment)\b/i.test(taskText);
 
   return modDocs.filter(doc => {
-    const docNameNorm = (doc.title + ' ' + (doc.fileName || '')).toLowerCase()
-      .replace(/ueb/g, 'üb').replace(/hsu/g, 'hsü').replace(/\s+/g, '');
+    const docTokens = extractNormalizedTokens(`${doc.title || ''} ${doc.fileName || ''}`);
 
-    // 1. Direkter Treffer über gleiches Kürzel (z.B. ÜB 3, V4, LE 5, Testat 2)
-    if (taskTokens.length > 0 && taskTokens.some(tok => docNameNorm.includes(tok))) {
-      return true;
+    // 1. Direkter Treffer über gleiches Kürzel (z.B. LE03 == LE 3, ÜB 2 == ÜB02)
+    if (taskTokens.length > 0 && docTokens.length > 0) {
+      if (taskTokens.some(tok => docTokens.includes(tok))) return true;
+      // Wenn beide ein Kürzel haben, diese sich aber widersprechen (z.B. LE03 vs. LE 4), nicht falsch zuordnen!
+      return false;
     }
 
-    // 2. Treffer über gleiche Semesterwoche + passende Kategorie
+    // 2. Treffer über gleiche Semesterwoche + passende Kategorie (wenn kein widersprüchliches Kürzel vorliegt)
     const docWeek = (doc.weekLabel || '').trim();
     const sameWeek = docWeek && (docWeek === weekOneLine || docWeek.toLowerCase().startsWith(weekShort));
     if (sameWeek) {
@@ -399,7 +437,6 @@ function getRemainingWeekDocs(weekIdx, shortName, alreadyShownDocIds) {
   if (!week) return [];
   const weekOneLine = week.weekLabel.replace(/\n/g, ' ').trim();
   const weekShort = week.weekLabel.split('\n')[0].trim().toLowerCase();
-
   return cachedDocsList.filter(doc => {
     if (doc.module !== shortName) return false;
     if (alreadyShownDocIds && alreadyShownDocIds.has(doc.id)) return false;
@@ -431,7 +468,6 @@ function openUploadDocForTask(weekIdx, shortName, itemIdx, event) {
   const week = appState.weeks[weekIdx];
   const item = week?.cells?.[shortName]?.[itemIdx];
   openUploadDocModal(shortName);
-
   if (week) {
     const weekSel = document.getElementById('docWeekSelect');
     const oneLine = week.weekLabel.replace(/\n/g, ' ');
@@ -493,7 +529,6 @@ function calculateStats() {
     const s = moduleStats[mod.shortName];
     s.pct = s.total > 0 ? Math.round((s.completed / s.total) * 100) : 0;
   }
-
   const overallPct = overallTotal > 0 ? Math.round((overallCompleted / overallTotal) * 100) : 0;
   return { moduleStats, overallTotal, overallCompleted, overallInProgress, overallPct };
 }
@@ -543,6 +578,27 @@ function renderDashboard(stats) {
   }).join('');
 }
 
+function ensureMobileCurrentWeekBanner(currentWeekIdx) {
+  const viewTable = document.getElementById('viewTable');
+  if (!viewTable) return;
+  let banner = document.getElementById('mobileCurrentWeekBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'mobileCurrentWeekBanner';
+    banner.className = 'mobile-current-week-banner no-print';
+    viewTable.parentElement.insertBefore(banner, viewTable);
+  }
+  const idx = currentWeekIdx !== -1 ? currentWeekIdx : 0;
+  const week = appState.weeks[idx];
+  if (week) {
+    const oneLine = week.weekLabel.replace(/\n/g, ' ');
+    banner.innerHTML = `
+      <span>📍 Aktuelle Woche oben: ${escapeHtml(oneLine)}</span>
+      <button type="button" class="btn btn-header btn-sm" onclick="switchTab('focus'); selectCurrentCalendarWeek(true);">Zum Fokus</button>
+    `;
+  }
+}
+
 function renderTable(stats) {
   const thead = document.getElementById('tableHead');
   const tbody = document.getElementById('tableBody');
@@ -563,8 +619,9 @@ function renderTable(stats) {
   const searchVal = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
   const statusFilter = document.getElementById('statusFilter')?.value || 'all';
   const currentWeekIdx = findWeekIndexByDate(new Date());
-  let rowsHtml = '';
+  ensureMobileCurrentWeekBanner(currentWeekIdx);
 
+  let rowsHtml = '';
   appState.weeks.forEach((week, wIdx) => {
     const isCurrentWeek = (wIdx === currentWeekIdx);
     const rowClass = `${wIdx % 2 === 0 ? 'even-row' : 'odd-row'} ${isCurrentWeek ? 'current-week-row' : ''}`;
@@ -589,7 +646,6 @@ function renderTable(stats) {
       const allDone = allItems.length > 0 && allItems.every(i => i.done);
       const cellClass = allItems.length === 0 ? 'empty-cell' : (allDone ? 'completed-cell' : '');
       const dropAttrs = `ondragover="handleCellDragOver(event)" ondragleave="handleCellDragLeave(event)" ondrop="handleCellDrop(event, ${wIdx}, '${escapeAttr(mod.shortName)}')"`;
-
       const shownDocIds = new Set();
 
       if (filteredItems.length === 0) {
@@ -606,14 +662,16 @@ function renderTable(stats) {
         `;
       } else {
         const listHtml = filteredItems.map(({ item, idx }) => {
-          const isTestat = /testat\s*\d+/i.test(item.text);
+          const cleanItemText = stripModuleBracketsFromText(item.text, mod.shortName);
+          const isTestat = /testat\s*\d+/i.test(cleanItemText);
           const badgeHtml = isTestat ? `<span class="testat-tag">TESTAT</span>` : '';
           const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
           const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
 
-          const taskDocs = getDocsForTask(wIdx, mod.shortName, item.text);
+          const taskDocs = getDocsForTask(wIdx, mod.shortName, cleanItemText);
           taskDocs.forEach(d => shownDocIds.add(d.id));
           const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
+          const actionMenuHtml = buildTaskActionMenuHtml(wIdx, mod.shortName, idx, item, 'tbl');
 
           return `
             <li class="task-item ${statusClass}"
@@ -623,20 +681,15 @@ function renderTable(stats) {
                 ondragover="handleTaskDragOverItem(event)"
                 ondragleave="handleTaskDragLeaveItem(event)"
                 ondrop="handleTaskDropOnItem(event, ${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-              <span class="drag-handle" title="Ziehen zum Verschieben (Drag & Drop)">⠿</span>
-              <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-              <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-                ${escapeHtml(item.text)} ${inProgBadge} ${badgeHtml}
-                ${docsChipsHtml}
-              </span>
-              <div class="task-actions">
-                <button class="task-action-btn" title="Dokument zu dieser Aufgabe hochladen" onclick="openUploadDocForTask(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, event)">📎</button>
-                <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" title="Als angefangen markieren / aufheben" onclick="toggleTaskInProgress(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
-                <button class="task-action-btn" title="Nach oben" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
-                <button class="task-action-btn" title="Nach unten" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
-                <button class="task-action-btn" title="Bearbeiten" onclick="openEditTaskModal(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">✏️</button>
-                <button class="task-action-btn" title="Löschen" onclick="deleteTaskItem(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">🗑️</button>
+              <div class="task-main-row">
+                <span class="drag-handle" title="Ziehen zum Verschieben (Drag & Drop)">⠿</span>
+                <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+                <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+                  ${escapeHtml(cleanItemText)} ${inProgBadge} ${badgeHtml}
+                </span>
+                ${actionMenuHtml}
               </div>
+              ${docsChipsHtml}
             </li>
           `;
         }).join('');
@@ -645,7 +698,6 @@ function renderTable(stats) {
         const remainingDocsHtml = remainingDocs.length > 0
           ? `<div class="cell-docs-footer">${renderTaskDocChipsHtml(remainingDocs)}</div>`
           : '';
-
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
             <ul class="task-list">${listHtml}</ul>
@@ -754,6 +806,7 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   if (!draggedTaskInfo) return;
   const { weekIdx: srcWeekIdx, shortName: srcMod, itemIdx: srcIdx } = draggedTaskInfo;
   draggedTaskInfo = null;
+
   const srcList = appState.weeks[srcWeekIdx]?.cells[srcMod];
   if (!srcList || !srcList[srcIdx]) return;
 
@@ -803,7 +856,7 @@ function moveTaskOrder(weekIdx, shortName, itemIdx, direction) {
 }
 
 /* =========================================================
-   TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE (INKL. DOKUMENTEN-ZUGRIFF)
+   TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE (OHNE ECKIGE KLAMMERN)
    ========================================================= */
 function populateFocusWeekDropdown() {
   const select = document.getElementById('focusWeekSelect');
@@ -861,28 +914,25 @@ function renderFocusView() {
     const listHtml = items.map((item, idx) => {
       weekTotal++;
       if (item.done) weekDone++;
+      const cleanItemText = stripModuleBracketsFromText(item.text, mod.shortName);
       const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
       const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
 
-      const taskDocs = getDocsForTask(selIdx, mod.shortName, item.text);
+      const taskDocs = getDocsForTask(selIdx, mod.shortName, cleanItemText);
       taskDocs.forEach(d => shownDocIds.add(d.id));
       const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
+      const actionMenuHtml = buildTaskActionMenuHtml(selIdx, mod.shortName, idx, item, 'foc');
 
       return `
         <li class="task-item ${statusClass}">
-          <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-          <span class="task-text" onclick="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-            <strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(item.text)} ${inProgBadge}
-            ${docsChipsHtml}
-          </span>
-          <div class="task-actions">
-            <button class="task-action-btn" title="Dokument zu dieser Aufgabe hochladen" onclick="openUploadDocForTask(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, event)">📎</button>
-            <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" onclick="toggleTaskInProgress(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
-            <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
-            <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
-            <button class="task-action-btn" onclick="openEditTaskModal(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">✏️</button>
-            <button class="task-action-btn" onclick="deleteTaskItem(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">🗑️</button>
+          <div class="task-main-row">
+            <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+            <span class="task-text" onclick="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+              ${escapeHtml(cleanItemText)} ${inProgBadge}
+            </span>
+            ${actionMenuHtml}
           </div>
+          ${docsChipsHtml}
         </li>
       `;
     }).join('');
@@ -919,29 +969,35 @@ function renderFocusView() {
       const openItems = allItems
         .map((item, idx) => ({ item, idx }))
         .filter(({ item }) => !item.done);
+
       if (openItems.length > 0) {
         const listHtml = openItems.map(({ item, idx }) => {
-          const taskDocs = getDocsForTask(wIdx, mod.shortName, item.text);
+          const cleanItemText = stripModuleBracketsFromText(item.text, mod.shortName);
+          const taskDocs = getDocsForTask(wIdx, mod.shortName, cleanItemText);
           const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
           return `
             <li class="task-item ${item.inProgress ? 'in-progress' : ''}">
-              <input type="checkbox" class="task-checkbox" onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-              <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-                ${escapeHtml(item.text)} ${item.inProgress ? '<span class="inprogress-tag">⏳ Angefangen</span>' : ''}
-                ${docsChipsHtml}
-              </span>
+              <div class="task-main-row">
+                <input type="checkbox" class="task-checkbox" onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+                <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+                  ${escapeHtml(cleanItemText)} ${item.inProgress ? '<span class="inprogress-tag">⏳ Angefangen</span>' : ''}
+                </span>
+              </div>
+              ${docsChipsHtml}
             </li>
           `;
         }).join('');
+
         overdueHtml += `
           <div class="overdue-box">
-            <h4>${escapeHtml(mod.shortName)} (${escapeHtml(shortWeekName)})</h4>
+            <h4>${escapeHtml(mod.shortName)} – ${escapeHtml(shortWeekName)}</h4>
             <ul class="task-list">${listHtml}</ul>
           </div>
         `;
       }
     });
   }
+
   if (overdueContainer) {
     overdueContainer.innerHTML = overdueHtml || `<p style="color: var(--success-text); font-weight: 600;">🎉 Alles erledigt! Keine offenen Rückstände aus den Vorwochen.</p>`;
   }
@@ -984,7 +1040,7 @@ function populateModalDropdowns() {
   const weekSelect = document.getElementById('taskWeekSelect');
   if (modSelect) {
     modSelect.innerHTML = appState.modules.map(m =>
-      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} (${escapeHtml(m.fullName)})</option>`
+      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`
     ).join('');
   }
   if (weekSelect) {
@@ -1016,7 +1072,6 @@ function updateTaskPositionOptions(selectedPos = null) {
 }
 
 function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
-  ensureExtendedUIElements();
   populateModalDropdowns();
   document.getElementById('taskModalTitle').textContent = '➕ Neue Aufgabe hinzufügen';
   document.getElementById('editTaskWeekIdx').value = '';
@@ -1032,6 +1087,7 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
   document.getElementById('taskWeekSelect').value = String(targetWeek);
   document.getElementById('taskModuleSelect').value = preselectedModule || appState.modules[0].shortName;
   updateTaskPositionOptions();
+
   document.getElementById('taskTextInput').value = '';
   document.getElementById('taskDueDateInput').value = getWeekMondayDateString(targetWeek);
   document.getElementById('taskSyncCalendarCheck').checked = true;
@@ -1046,8 +1102,8 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
 function openEditTaskModal(weekIdx, shortName, itemIdx) {
   const item = appState.weeks[weekIdx]?.cells[shortName]?.[itemIdx];
   if (!item) return;
-  ensureExtendedUIElements();
   populateModalDropdowns();
+
   document.getElementById('taskModalTitle').textContent = '✏️ Aufgabe & Status bearbeiten';
   document.getElementById('editTaskWeekIdx').value = String(weekIdx);
   document.getElementById('editTaskOrigModule').value = shortName;
@@ -1057,7 +1113,8 @@ function openEditTaskModal(weekIdx, shortName, itemIdx) {
   document.getElementById('taskWeekSelect').value = String(weekIdx);
   document.getElementById('taskModuleSelect').value = shortName;
   updateTaskPositionOptions(itemIdx);
-  document.getElementById('taskTextInput').value = item.text;
+
+  document.getElementById('taskTextInput').value = stripModuleBracketsFromText(item.text, shortName);
   document.getElementById('taskDueDateInput').value = item.dueDate || getWeekMondayDateString(weekIdx);
   document.getElementById('taskSyncCalendarCheck').checked = item.syncCalendar !== false;
   document.getElementById('taskDoneCheck').checked = !!item.done;
@@ -1070,7 +1127,10 @@ function openEditTaskModal(weekIdx, shortName, itemIdx) {
 
 function saveTaskFromModal() {
   const textInput = document.getElementById('taskTextInput');
-  const cleanText = (textInput.value || '').trim().replace(/^[✅⏳]\s*/, '');
+  const targetMod = document.getElementById('taskModuleSelect').value;
+  const rawText = (textInput.value || '').trim().replace(/^[✅⏳]\s*/, '');
+  const cleanText = stripModuleBracketsFromText(rawText, targetMod);
+
   if (!cleanText) {
     showToast('⚠️ Bitte eine Aufgabenbeschreibung eingeben.');
     textInput.focus();
@@ -1078,7 +1138,6 @@ function saveTaskFromModal() {
   }
 
   const targetWeekIdx = parseInt(document.getElementById('taskWeekSelect').value, 10);
-  const targetMod = document.getElementById('taskModuleSelect').value;
   const targetPos = parseInt(document.getElementById('taskPositionSelect')?.value || '0', 10);
   const mondayDefault = getWeekMondayDateString(targetWeekIdx);
   const dueDate = document.getElementById('taskDueDateInput').value || mondayDefault;
@@ -1177,9 +1236,9 @@ function syncAndClean() {
       const seenInCell = new Set();
       const cleaned = [];
       for (const item of items) {
-        const cleanLine = item.text
+        const cleanLine = stripModuleBracketsFromText(item.text, mod.shortName)
           .replace(/^[✅⏳📅]\s*/, '')
-          .replace(new RegExp(`^\\[?${mod.shortName}\\]?\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
+          .replace(new RegExp(`^${mod.shortName}\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
           .trim();
         const lowerClean = cleanLine.toLowerCase();
         if (!cleanLine || seenInCell.has(lowerClean)) continue;
@@ -1249,14 +1308,13 @@ function populateDocsFilterDropdowns() {
 }
 
 function openUploadDocModal(preselectedMod = null) {
-  ensureExtendedUIElements();
   const modSel = document.getElementById('docModuleSelect');
   const catSel = document.getElementById('docCategorySelect');
   const weekSel = document.getElementById('docWeekSelect');
 
   if (modSel) {
     modSel.innerHTML = appState.modules.map(m =>
-      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} (${escapeHtml(m.fullName)})</option>`
+      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`
     ).join('');
     if (preselectedMod) modSel.value = preselectedMod;
   }
@@ -1273,22 +1331,29 @@ function openUploadDocModal(preselectedMod = null) {
       }).join('');
   }
 
-  document.getElementById('docCustomTitle').value = '';
-  document.getElementById('docFileInput').value = '';
+  const titleEl = document.getElementById('docCustomTitle');
+  if (titleEl) {
+    titleEl.value = '';
+    titleEl.placeholder = 'z.B. Musterlösung ÜB 3 – Komplexe Zahlen';
+  }
+  const fileInput = document.getElementById('docFileInput');
+  if (fileInput) fileInput.value = '';
+
   pendingUploadPlans = [];
   const previewEl = document.getElementById('docSmartPreviewList');
   if (previewEl) previewEl.innerHTML = '';
+
   openModal('uploadDocModal');
 }
 
 function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, fallbackWeekLabel) {
   const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[_\-]+/g, ' ');
   const lower = cleanName.toLowerCase();
-
   let detectedModule = fallbackModule || appState.modules[0]?.shortName || 'ModSim';
+
   const modPatterns = [
     { mod: 'ModSim', regex: /\b(modsim|modellierung|simulation|fem|numpy|python|awp|rwp|2-\d{2})\b/i },
-    { mod: 'Informatik', regex: /\b(info|informatik|programmierung|le\s*\d+|ringtausch|oop|polymorphismus|verkettete)\b/i },
+    { mod: 'Informatik', regex: /\b(info|informatik|programmierung|grundbegriffe|le\s*0*\d+|ringtausch|oop|polymorphismus|verkettete)\b/i },
     { mod: 'Elektro', regex: /\b(elektro|elektrotechnik|elektronik|kirchhoff|ohm|kondensator|spule|wechselstrom|diode|transistor|operationsverst)\b/i },
     { mod: 'Mathe 2', regex: /\b(mathe|hm\s*2|komplexe|euler|gauß|gauss|matrizen|determinante|eigenwert|hesse|taylor|fubini)\b/i },
     { mod: 'CAD', regex: /\b(cad|testat|toleranz|passung|oberfl|wellenlagerung|maschinenelemente|typ\s*[a-j])\b/i }
@@ -1311,14 +1376,14 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     detectedCategory = 'Testat / Praktikum';
   } else if (/(klausur|altklausur|zusammenfassung|formelsammlung|skript)/i.test(cleanName)) {
     detectedCategory = 'Klausur / Zusammenfassung';
-  } else if (/(vorlesung|folien|\bv\s*\d+|\ble\s*\d+)/i.test(cleanName)) {
+  } else if (/(vorlesung|folien|\bv\s*0*\d+|\ble\s*0*\d+)/i.test(cleanName)) {
     detectedCategory = 'Vorlesung';
   }
 
   let detectedWeekLabel = fallbackWeekLabel || '';
   let matchReason = 'Standard-Auswahl';
 
-  const directWeekMatch = cleanName.match(/\b(?:woche|week|w)\s*(\d{1,2})\b/i);
+  const directWeekMatch = cleanName.match(/\b(?:woche|week|w)\s*0*(\d{1,2})\b/i);
   if (directWeekMatch) {
     const wNum = parseInt(directWeekMatch[1], 10);
     if (wNum >= 1 && wNum <= appState.weeks.length) {
@@ -1328,11 +1393,7 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
   }
 
   if (!detectedWeekLabel || matchReason === 'Standard-Auswahl') {
-    const tokenRegex = /\b(v\s*\d+|le\s*\d+|üb\s*\d+|ueb\s*\d+|ü\s*\d+|hsü\s*\d+|hsu\s*\d+|testat\s*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
-    const tokens = (cleanName.match(tokenRegex) || []).map(t =>
-      t.toLowerCase().replace(/ueb|^ü(?=\s*\d)/, 'üb').replace(/hsu/, 'hsü').replace(/\s+/g, '')
-    );
-
+    const tokens = extractNormalizedTokens(cleanName);
     let bestScore = 0;
     let bestWeek = null;
     let bestToken = '';
@@ -1340,15 +1401,15 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     for (const week of appState.weeks) {
       const modItems = week.cells[detectedModule] || [];
       for (const item of modItems) {
-        const itemNorm = item.text.toLowerCase().replace(/\s+/g, '');
+        const itemTokens = extractNormalizedTokens(item.text);
         let score = 0;
         for (const tok of tokens) {
-          if (itemNorm.includes(tok)) {
-            score += 10;
+          if (itemTokens.includes(tok)) {
+            score += 12;
             bestToken = tok.toUpperCase();
           }
         }
-        const words = lower.split(/\s+/).filter(w => w.length >= 4 && !['vorlesung', 'übung', 'uebung', 'lösung', 'loesung'].includes(w));
+        const words = lower.split(/\s+/).filter(w => w.length >= 4 && !['vorlesung', 'übung', 'uebung', 'lösung', 'loesung', 'grundbegriffe'].includes(w));
         for (const w of words) {
           if (item.text.toLowerCase().includes(w)) {
             score += 4;
@@ -1410,7 +1471,6 @@ function handleDocFilesSelected() {
       reason: guess.reason
     };
   });
-
   renderSmartUploadPreview();
 }
 
@@ -1427,7 +1487,7 @@ function renderSmartUploadPreview() {
   previewContainer.innerHTML = pendingUploadPlans.map((plan, idx) => `
     <div class="smart-sort-card">
       <div class="smart-sort-card-header">
-        <strong>📄 ${escapeHtml(plan.file.name)}</strong>
+        <strong>📄 ${escapeHtml(plan.file.name)} (${formatFileSize(plan.file.size)})</strong>
         <span class="smart-sort-reason">✨ ${escapeHtml(plan.reason)}</span>
       </div>
       <div class="smart-sort-grid">
@@ -1480,11 +1540,9 @@ async function handleSaveUploadedDocs() {
     showToast('⚠️ Bitte mindestens eine Datei auswählen.');
     return;
   }
-
   if (pendingUploadPlans.length !== files.length) {
     handleDocFilesSelected();
   }
-
   const customTitle = (document.getElementById('docCustomTitle')?.value || '').trim();
 
   try {
@@ -1494,23 +1552,6 @@ async function handleSaveUploadedDocs() {
     for (let i = 0; i < pendingUploadPlans.length; i++) {
       const plan = pendingUploadPlans[i];
       const file = plan.file;
-      const weekDisplay = plan.weekLabel ? plan.weekLabel : 'Allgemein (ohne feste Woche)';
-
-      const isConfirmed = window.confirm(
-        `Dokument ${i + 1} von ${pendingUploadPlans.length}: „${file.name}“\n\n` +
-        `Automatische Einsortierung:\n` +
-        `• Modul: ${plan.module}\n` +
-        `• Kategorie: ${plan.category}\n` +
-        `• Woche: ${weekDisplay}\n` +
-        `(${plan.reason})\n\n` +
-        `Ist diese Einsortierung richtig? (Klicke auf „Abbrechen“, wenn du die Zuordnung im Fenster noch ändern möchtest.)`
-      );
-
-      if (!isConfirmed) {
-        showToast(`ℹ️ Bitte passe die Zuordnung für „${file.name}“ im Auswahlfeld an und speichere erneut.`);
-        return;
-      }
-
       const dataUrl = await readFileAsDataURL(file);
       const docRecord = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -1524,7 +1565,6 @@ async function handleSaveUploadedDocs() {
         dataUrl: dataUrl,
         uploadedAt: Date.now()
       };
-
       await new Promise((resolve, reject) => {
         const tx = db.transaction(DOCS_STORE_NAME, 'readwrite');
         tx.objectStore(DOCS_STORE_NAME).put(docRecord);
@@ -1537,7 +1577,7 @@ async function handleSaveUploadedDocs() {
     await refreshDocsCache();
     closeModal('uploadDocModal');
     renderAll();
-    showToast(`📁 ${savedCount} Dokument(e) erfolgreich geprüft und gespeichert!`);
+    showToast(`📁 ${savedCount} Dokument(e) erfolgreich im Modulspeicher hinterlegt!`);
   } catch (e) {
     console.error('Fehler beim Speichern des Dokuments:', e);
     showToast('❌ Fehler beim Speichern der Datei.');
@@ -1566,7 +1606,6 @@ async function deleteModuleDoc(docId) {
    ========================================================= */
 function ensureEditDocModalExists() {
   if (document.getElementById('editDocModal')) return;
-
   const modalBackdrop = document.createElement('div');
   modalBackdrop.className = 'modal-backdrop';
   modalBackdrop.id = 'editDocModal';
@@ -1609,11 +1648,8 @@ function ensureEditDocModalExists() {
 function openEditDocModal(docId, event = null) {
   if (event) event.stopPropagation();
   ensureEditDocModalExists();
-
   const doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) return;
-
-  // Falls die Vorschau offen war, diese schließen
   closeModal('docPreviewModal');
 
   const modSel = document.getElementById('editDocModuleSelect');
@@ -1624,29 +1660,24 @@ function openEditDocModal(docId, event = null) {
 
   if (idInp) idInp.value = doc.id;
   if (titleInp) titleInp.value = doc.title || doc.fileName || '';
-
   if (modSel) {
     modSel.innerHTML = appState.modules.map(m =>
-      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} (${escapeHtml(m.fullName)})</option>`
+      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`
     ).join('');
     modSel.value = doc.module;
   }
-
   if (catSel) {
     catSel.innerHTML = DOC_CATEGORIES.map(c =>
       `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`
     ).join('');
     catSel.value = doc.category || 'Vorlesung';
   }
-
   if (weekSel) {
     weekSel.innerHTML = `<option value="">Allgemein / Ohne feste Woche</option>` +
       appState.weeks.map(w => {
         const oneLine = w.weekLabel.replace(/\n/g, ' ');
         return `<option value="${escapeAttr(oneLine)}">${escapeHtml(oneLine)}</option>`;
       }).join('');
-
-    // Passende Woche auswählen (auch wenn sich Zeilenumbrüche leicht unterscheiden)
     const savedWeek = (doc.weekLabel || '').trim();
     const savedWeekShort = savedWeek.split('(')[0].trim().toLowerCase();
     let matchedValue = '';
@@ -1659,14 +1690,12 @@ function openEditDocModal(docId, event = null) {
     }
     weekSel.value = matchedValue;
   }
-
   openModal('editDocModal');
 }
 
 async function saveEditedDoc() {
   const docId = document.getElementById('editDocIdInput')?.value;
   if (!docId) return;
-
   const doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) return;
 
@@ -1688,11 +1717,9 @@ async function saveEditedDoc() {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-
     await refreshDocsCache();
     closeModal('editDocModal');
     renderAll();
-
     const weekInfo = newWeek ? newWeek.split('(')[0].trim() : 'Allgemein';
     showToast(`✅ Einsortierung geändert: ${newMod} • ${newCat} (${weekInfo})`);
   } catch (e) {
@@ -1710,7 +1737,6 @@ function previewModuleDoc(docId) {
   dlBtn.href = doc.dataUrl;
   dlBtn.download = doc.fileName || doc.title;
 
-  // "Einsortierung ändern"-Button direkt im Vorschau-Modal ergänzen
   let editBtn = document.getElementById('docPreviewEditBtn');
   if (!editBtn && dlBtn && dlBtn.parentElement) {
     editBtn = document.createElement('button');
@@ -1744,7 +1770,7 @@ function previewModuleDoc(docId) {
 
 function renderModuleDocsView() {
   const grid = document.getElementById('moduleDocsGrid');
-  if (!grid) return;
+  if (!grid || !appState) return;
   const modFilter = document.getElementById('docsModuleFilter')?.value || 'all';
   const catFilter = document.getElementById('docsCategoryFilter')?.value || 'all';
   const modulesToShow = modFilter === 'all'
@@ -1796,7 +1822,7 @@ function renderModuleDocsView() {
 }
 
 /* =========================================================
-   TAB 4: E-MAIL BRIEFING GENERATOR & AUTOMATIK-STATUS
+   TAB 4: E-MAIL BRIEFING GENERATOR (OHNE ECKIGE KLAMMERN)
    ========================================================= */
 function buildEmailHtmlObject() {
   const statsObj = calculateStats();
@@ -1805,6 +1831,7 @@ function buildEmailHtmlObject() {
   const week = appState.weeks[selIdx] || appState.weeks[0];
   const upcomingWeekLabel = week.weekLabel.replace(/\n/g, ' ');
   const mondayStr = formatIsoDateDE(getWeekMondayDateString(selIdx));
+
   const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
   const themeObj = THEMES[currentThemeKey] || THEMES.rose;
   const primaryColor = themeObj.colors[0];
@@ -1820,15 +1847,16 @@ function buildEmailHtmlObject() {
     if (items.length > 0) {
       const itemsHtml = items.map(i => {
         const icon = i.done ? '✅ ' : (i.inProgress ? '⏳ ' : '⬜ ');
-        return `<li>${icon}<strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(i.text)}</li>`;
+        const cleanTxt = stripModuleBracketsFromText(i.text, mod.shortName);
+        return `<li>${icon}${escapeHtml(cleanTxt)}</li>`;
       }).join('');
       upcomingTasksHtml += `
         <div style="margin-bottom: 14px; padding: 12px; background-color: ${lightBg}; border-left: 4px solid ${primaryColor}; border-radius: 6px;">
-          <strong style="color: ${darkColor}; font-size: 15px;">${escapeHtml(mod.shortName)} (${escapeHtml(mod.fullName)})</strong>
+          <strong style="color: ${darkColor}; font-size: 15px;">${escapeHtml(mod.shortName)} – ${escapeHtml(mod.fullName)}</strong>
           <ul style="margin: 8px 0 0 0; padding-left: 20px; color: #333;">${itemsHtml}</ul>
         </div>`;
-      plainTextLines.push(`\n[${mod.shortName}]`);
-      items.forEach(i => plainTextLines.push(` - ${i.done ? '[x]' : (i.inProgress ? '[~]' : '[ ]')} ${i.text}`));
+      plainTextLines.push(`\n${mod.shortName} (${mod.fullName}):`);
+      items.forEach(i => plainTextLines.push(` - ${i.done ? '(erledigt)' : (i.inProgress ? '(angefangen)' : '(offen)')} ${stripModuleBracketsFromText(i.text, mod.shortName)}`));
     }
   }
 
@@ -1843,7 +1871,7 @@ function buildEmailHtmlObject() {
     for (const mod of appState.modules) {
       const openLines = (pastWeek.cells[mod.shortName] || []).filter(l => !l.done);
       if (openLines.length > 0) {
-        const openHtml = openLines.map(l => `<li>${l.inProgress ? '⏳ ' : ''}${escapeHtml(l.text)}</li>`).join('');
+        const openHtml = openLines.map(l => `<li>${l.inProgress ? '⏳ ' : ''}${escapeHtml(stripModuleBracketsFromText(l.text, mod.shortName))}</li>`).join('');
         overdueTasksHtml += `
           <div style="margin-bottom: 8px;">
             <strong>${escapeHtml(mod.shortName)} (${escapeHtml(weekShort)}):</strong>

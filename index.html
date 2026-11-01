@@ -176,7 +176,7 @@
       <!-- DASHBOARD PROGRESS CARDS -->
       <div class="dashboard-grid" id="dashboardCards"></div>
 
-      <!-- TOOLBAR & TABS (OHNE TIPP-BANNER) -->
+      <!-- TOOLBAR & TABS -->
       <div class="toolbar no-print">
         <div class="tabs">
           <button class="tab-btn active" id="tabBtnTable" onclick="switchTab('table')">📊 Semesterplan</button>
@@ -234,7 +234,7 @@
           <div class="docs-header-bar">
             <div>
               <h2>📁 Vorlesungs-, Übungs- &amp; Lösungsspeicher (pro Modul)</h2>
-              <p class="modal-hint" style="margin-bottom:0;">Hochgeladene Dateien werden intelligent der passenden Semesterwoche zugeordnet und vor dem Speichern einzeln mit dir abgestimmt.</p>
+              <p class="modal-hint" style="margin-bottom:0;">Hochgeladene Dateien werden intelligent der passenden Semesterwoche zugeordnet und können vor und nach dem Speichern jederzeit angepasst werden.</p>
             </div>
             <div class="docs-controls">
               <select id="docsModuleFilter" class="select-box" onchange="renderModuleDocsView()">
@@ -303,7 +303,7 @@
     </nav>
   </div>
 
-  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN (INKL. STATUS "ANGEFANGEN" & REIHENFOLGE) -->
+  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN -->
   <div class="modal-backdrop" id="taskModal">
     <div class="modal">
       <div class="modal-header">
@@ -314,7 +314,6 @@
         <input type="hidden" id="editTaskWeekIdx" value="">
         <input type="hidden" id="editTaskOrigModule" value="">
         <input type="hidden" id="editTaskItemIdx" value="">
-
         <div class="form-grid">
           <div class="form-group">
             <label for="taskModuleSelect">Modul / Fach</label>
@@ -325,12 +324,10 @@
             <select id="taskWeekSelect" class="select-box full-width" onchange="updateTaskPositionOptions()"></select>
           </div>
         </div>
-
         <div class="form-group" style="margin-top: 14px;">
           <label for="taskTextInput">Aufgabenbeschreibung</label>
           <input type="text" id="taskTextInput" placeholder="z.B. Vorlesung V4 nacharbeiten, Übungsblatt 3..." onkeydown="if(event.key==='Enter') saveTaskFromModal()">
         </div>
-
         <div class="form-grid" style="margin-top: 14px;">
           <div class="form-group">
             <label for="taskPositionSelect">Position / Reihenfolge in dieser Woche</label>
@@ -341,7 +338,6 @@
             <input type="date" id="taskDueDateInput">
           </div>
         </div>
-
         <div class="form-group checkbox-group" style="margin-top: 14px;">
           <label class="checkbox-label">
             <input type="checkbox" id="taskSyncCalendarCheck" checked>
@@ -365,7 +361,7 @@
     </div>
   </div>
 
-  <!-- MODAL 2: DOKUMENT HOCHLADEN (MIT INTELLIGENTER WOCHEN-ERKENNUNG & RÜCKFRAGE) -->
+  <!-- MODAL 2: DOKUMENT HOCHLADEN (MIT INTELLIGENTER WOCHEN-ERKENNUNG) -->
   <div class="modal-backdrop" id="uploadDocModal">
     <div class="modal">
       <div class="modal-header">
@@ -409,7 +405,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
-        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Prüfen &amp; im Modul speichern</button>
+        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Im Modul speichern</button>
       </div>
     </div>
   </div>
@@ -472,7 +468,7 @@
           <label for="clientIdInput">Hinterlegte Google OAuth 2.0 Client-ID (Automatisch aktiv)</label>
           <input type="text" id="clientIdInput" value="420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com">
           <small class="field-note">
-            Alle Aufgaben werden im Google Kalender &amp; in Google Tasks platzsparend <strong>ohne Wochenzahl und ohne Emojis</strong> (Format: <code>Modul: Aufgabe</code>) am <strong>Montag der jeweiligen Woche</strong> eingetragen.
+            Alle Aufgaben werden im Google Kalender &amp; in Google Tasks platzsparend <strong>ohne Wochenzahl, ohne eckige Klammern und ohne Emojis</strong> (Format: <code>Modul: Aufgabe</code>) am <strong>Montag der jeweiligen Woche</strong> eingetragen.
           </small>
         </div>
         <div class="form-group" style="margin-bottom: 16px;">

@@ -22,11 +22,10 @@
   --bg-page: #FAF6F6;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(142, 58, 73, 0.08);
   --radius: 12px;
 }
-
 [data-theme="berry"] {
   --primary: #DB2777;
   --primary-dark: #831843;
@@ -37,10 +36,9 @@
   --bg-page: #FDF2F8;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(131, 24, 67, 0.08);
 }
-
 [data-theme="mocha"] {
   --primary: #6E5D56;
   --primary-dark: #423532;
@@ -51,10 +49,9 @@
   --bg-page: #F7F5F4;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.94);
+  --task-bg: rgba(255, 255, 255, 0.96);
   --shadow: 0 4px 16px rgba(66, 53, 50, 0.08);
 }
-
 [data-theme="sage"] {
   --primary: #5E8C76;
   --primary-dark: #2E5242;
@@ -65,10 +62,9 @@
   --bg-page: #F4F8F6;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(46, 82, 66, 0.08);
 }
-
 [data-theme="ocean"] {
   --primary: #3A6EA5;
   --primary-dark: #1E3A5F;
@@ -79,10 +75,9 @@
   --bg-page: #F5F8FC;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(30, 58, 95, 0.08);
 }
-
 [data-theme="lavender"] {
   --primary: #7E6BC4;
   --primary-dark: #46357D;
@@ -93,10 +88,9 @@
   --bg-page: #F8F7FC;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(70, 53, 125, 0.08);
 }
-
 [data-theme="terracotta"] {
   --primary: #C26D53;
   --primary-dark: #853F2A;
@@ -107,10 +101,9 @@
   --bg-page: #FBF7F5;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(133, 63, 42, 0.08);
 }
-
 [data-theme="nordic"] {
   --primary: #3B7A8C;
   --primary-dark: #1F4854;
@@ -121,10 +114,9 @@
   --bg-page: #F4F8F9;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.92);
+  --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(31, 72, 84, 0.08);
 }
-
 [data-theme="pearl"] {
   --primary: #B57C86;
   --primary-dark: #6B444C;
@@ -135,10 +127,9 @@
   --bg-page: #FBF8F9;
   --white: #FFFFFF;
   --card-bg: #FFFFFF;
-  --task-bg: rgba(255, 255, 255, 0.94);
+  --task-bg: rgba(255, 255, 255, 0.96);
   --shadow: 0 4px 16px rgba(107, 68, 76, 0.07);
 }
-
 /* DUNKLE FARBSCHEMATA (ÄSTHETISCHER DARK MODE) */
 [data-theme="dark"] {
   --primary: #D97789;
@@ -162,7 +153,6 @@
   --task-bg: #26222B;
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
 }
-
 [data-theme="obsidian"] {
   --primary: #52A788;
   --primary-dark: #8CE0C0;
@@ -185,7 +175,6 @@
   --task-bg: #1C2B26;
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
-
 [data-theme="cosmos"] {
   --primary: #5B9BD5;
   --primary-dark: #93C5FD;
@@ -208,7 +197,6 @@
   --task-bg: #1B2840;
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
-
 [data-theme="amethyst"] {
   --primary: #9B82F3;
   --primary-dark: #C4B5FD;
@@ -231,7 +219,6 @@
   --task-bg: #231D34;
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
-
 [data-theme="espresso"] {
   --primary: #B68F78;
   --primary-dark: #E2C5B3;
@@ -265,12 +252,10 @@
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
-
 html, body {
   max-width: 100%;
   overflow-x: hidden;
 }
-
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
   background-color: var(--bg-page);
@@ -279,10 +264,10 @@ body {
   padding-bottom: 50px;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
-
 .hidden,
 .drag-hint-banner,
-#dragHintBanner {
+#dragHintBanner,
+.date-tag {
   display: none !important;
 }
 
@@ -846,8 +831,22 @@ header {
 }
 
 /* =========================================================
-   8. TABELLE, DRAG & DROP & AUFGABEN-ELEMENTE (INKL. ANGEFANGEN)
+   8. TABELLE, DRAG & DROP, AUFGABEN & 3-PUNKTE-MENÜ (⋮)
    ========================================================= */
+.mobile-current-week-banner {
+  display: none;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  color: #FFFFFF;
+  padding: 10px 14px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  box-shadow: var(--shadow);
+}
 .table-wrapper {
   background: var(--card-bg);
   border-radius: var(--radius);
@@ -859,6 +858,7 @@ table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  min-width: 980px;
 }
 th {
   background: var(--primary);
@@ -873,14 +873,13 @@ th {
   z-index: 10;
 }
 th:first-child {
-  width: 150px;
+  width: 132px;
 }
 td {
-  padding: 10px;
+  padding: 9px;
   border: 1px solid var(--primary-border);
   vertical-align: top;
   font-size: 0.83rem;
-  word-wrap: break-word;
   transition: background-color 0.15s, outline 0.15s;
 }
 td.drag-over-cell {
@@ -932,17 +931,17 @@ td.completed-cell {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
 }
 .task-item {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 6px 8px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 9px;
   border-radius: 8px;
   background: var(--task-bg);
   border: 1px solid var(--primary-border);
-  transition: all 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
   position: relative;
   cursor: grab;
   min-width: 0;
@@ -960,15 +959,13 @@ td.completed-cell {
 .task-item:hover {
   border-color: var(--primary);
 }
-/* Status: Angefangen (In Bearbeitung) */
 .task-item.in-progress {
   background: var(--inprogress-bg);
   border-color: var(--inprogress-border);
   border-left: 4px solid var(--inprogress-text);
 }
-/* Status: Erledigt */
 .task-item.done {
-  opacity: 0.82;
+  opacity: 0.86;
   background: var(--success-bg);
   border-color: var(--success-border);
 }
@@ -976,19 +973,27 @@ td.completed-cell {
   text-decoration: line-through;
   color: var(--text-muted);
 }
+.task-main-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
 .drag-handle {
   color: var(--text-muted);
-  font-size: 0.9rem;
-  line-height: 1.2;
+  font-size: 0.85rem;
+  line-height: 1.25;
   cursor: grab;
   user-select: none;
   padding-top: 1px;
+  flex-shrink: 0;
 }
 .task-checkbox {
   margin-top: 3px;
   accent-color: var(--primary);
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -996,55 +1001,157 @@ td.completed-cell {
   flex: 1;
   min-width: 0;
   cursor: pointer;
-  word-break: break-word;
-  line-height: 1.35;
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
+  line-height: 1.38;
+  font-size: 0.82rem;
 }
-.task-actions {
-  display: flex;
-  gap: 1px;
-  opacity: 0.35;
-  transition: opacity 0.15s;
+
+/* Drei-Punkte-Menü (⋮) für Aufgaben-Aktionen */
+.task-menu-wrapper {
+  position: relative;
   flex-shrink: 0;
+  margin-left: 2px;
 }
-.task-item:hover .task-actions {
-  opacity: 1;
-}
-.task-action-btn {
+.task-menu-btn {
   background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 0.74rem;
-  padding: 2px 3px;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 1.05rem;
+  font-weight: 800;
   line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+.task-menu-btn:hover,
+.task-menu-btn.active {
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  border-color: var(--primary-border);
+}
+.task-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 205px;
+  background: var(--card-bg);
+  border: 1px solid var(--primary-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+  padding: 5px;
+  z-index: 95;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+}
+.task-dropdown-menu.open {
+  display: flex;
+}
+.task-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
   color: var(--text-main);
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 0.79rem;
+  font-weight: 600;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
 }
-.task-action-btn:hover,
-.task-action-btn.active-progress {
-  background: var(--inprogress-bg);
-  color: var(--inprogress-text);
+.task-menu-item:hover {
+  background: var(--primary-light);
+  color: var(--primary-dark);
 }
+.task-menu-item.danger-item {
+  color: var(--warning-text);
+}
+.task-menu-item.danger-item:hover {
+  background: var(--warning-bg);
+}
+
 .testat-tag,
-.date-tag,
 .inprogress-tag {
   display: inline-block;
   background: var(--primary-dark);
   color: #FFFFFF;
-  font-size: 0.67rem;
+  font-size: 0.66rem;
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 4px;
   margin-left: 4px;
-}
-.date-tag {
-  background: var(--primary);
-  font-weight: 600;
+  vertical-align: middle;
 }
 .inprogress-tag {
   background: var(--inprogress-bg);
   color: var(--inprogress-text);
   border: 1px solid var(--inprogress-border);
 }
+
+/* Dokument-Chips über volle Aufgabenbreite */
+.task-docs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  width: 100%;
+  padding-top: 2px;
+}
+.task-doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  border: 1px solid var(--primary-border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  max-width: 100%;
+  transition: all 0.15s ease;
+}
+.task-doc-chip:hover {
+  background: var(--primary);
+  color: #FFFFFF;
+  border-color: var(--primary);
+}
+.task-doc-chip.solution-chip {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: var(--success-border);
+}
+.task-doc-chip.solution-chip:hover {
+  background: var(--success-text);
+  color: #FFFFFF;
+}
+.task-doc-chip-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 210px;
+}
+.cell-docs-footer {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--primary-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .add-task-btn {
   margin-top: 6px;
   background: transparent;
@@ -1330,7 +1437,7 @@ tr.summary-bar-row td:first-child {
   border-radius: 8px;
 }
 .pdf-render-target .add-task-btn,
-.pdf-render-target .task-actions,
+.pdf-render-target .task-menu-wrapper,
 .pdf-render-target .drag-handle {
   display: none !important;
 }
@@ -1483,13 +1590,12 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   12. ECHTE HANDY- & IPHONE-ANSICHT (EXAKT AUF HANDYBREITE ANGEPASST)
+   12. HANDY- & IPHONE-ANSICHT (INKL. AKTUELLE WOCHE GANZ OBEN)
    ========================================================= */
 .ios-statusbar,
 .ios-bottom-nav {
   display: none;
 }
-
 @media (min-width: 769px) {
   body.iphone-view-mode {
     background: #18181B;
@@ -1534,7 +1640,9 @@ tr.summary-bar-row td:first-child {
   }
 }
 
-/* Handy-Layout (kein Überlaufen, einspaltige Karten auf schmalen Displays) */
+body.iphone-view-mode .mobile-current-week-banner {
+  display: flex;
+}
 body.iphone-view-mode header {
   padding: 10px 12px;
 }
@@ -1581,24 +1689,34 @@ body.iphone-view-mode .table-wrapper,
   background: transparent;
   border: none;
   box-shadow: none;
-  overflow-x: hidden;
+  overflow-x: visible;
 }
 body.iphone-view-mode table,
 body.iphone-view-mode thead,
-body.iphone-view-mode tbody,
 body.iphone-view-mode tfoot,
 body.iphone-view-mode th,
 body.iphone-view-mode td,
 body.iphone-view-mode tr,
 .pdf-compact-cards table,
 .pdf-compact-cards thead,
-.pdf-compact-cards tbody,
 .pdf-compact-cards tfoot,
 .pdf-compact-cards th,
 .pdf-compact-cards td,
 .pdf-compact-cards tr {
   display: block;
   width: 100%;
+  min-width: 0;
+}
+/* Flex-Ordering auf dem Handy: Aktuelle Woche steht immer ganz oben! */
+body.iphone-view-mode tbody,
+.pdf-compact-cards tbody {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+body.iphone-view-mode tbody tr.current-week-row {
+  order: -1;
+  border: 2px solid var(--primary);
 }
 body.iphone-view-mode thead,
 .pdf-compact-cards thead {
@@ -1610,7 +1728,7 @@ body.iphone-view-mode tbody tr,
   border-radius: 16px;
   border: 1px solid var(--primary-border);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow: visible;
   background: var(--card-bg);
 }
 body.iphone-view-mode td.week-col,
@@ -1619,6 +1737,7 @@ body.iphone-view-mode td.week-col,
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%) !important;
   color: #FFFFFF !important;
   padding: 10px 14px;
+  border-radius: 14px 14px 0 0;
   text-align: left;
   white-space: normal;
   display: flex;
@@ -1653,9 +1772,6 @@ body.iphone-view-mode td.empty-cell .add-task-btn {
   width: auto;
   margin-top: 0;
   padding: 4px 10px;
-}
-body.iphone-view-mode .task-actions {
-  opacity: 1;
 }
 body.iphone-view-mode .ios-bottom-nav {
   display: flex;
@@ -1738,6 +1854,9 @@ body.iphone-view-mode .ios-bottom-nav {
   .ios-statusbar {
     display: none !important;
   }
+  .mobile-current-week-banner {
+    display: flex;
+  }
   header {
     padding: 10px 12px;
     position: sticky;
@@ -1784,11 +1903,21 @@ body.iphone-view-mode .ios-bottom-nav {
     background: transparent;
     border: none;
     box-shadow: none;
-    overflow-x: hidden;
+    overflow-x: visible;
   }
-  table, thead, tbody, tfoot, th, td, tr {
+  table, thead, tfoot, th, td, tr {
     display: block;
     width: 100%;
+    min-width: 0;
+  }
+  tbody {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+  tbody tr.current-week-row {
+    order: -1;
+    border: 2px solid var(--primary);
   }
   thead {
     display: none;
@@ -1798,7 +1927,7 @@ body.iphone-view-mode .ios-bottom-nav {
     border-radius: 16px;
     border: 1px solid var(--primary-border);
     box-shadow: var(--shadow);
-    overflow: hidden;
+    overflow: visible;
     background: var(--card-bg);
   }
   td.week-col {
@@ -1806,6 +1935,7 @@ body.iphone-view-mode .ios-bottom-nav {
     background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%) !important;
     color: #FFFFFF !important;
     padding: 10px 14px;
+    border-radius: 14px 14px 0 0;
     text-align: left;
     white-space: normal;
     display: flex;
@@ -1837,9 +1967,6 @@ body.iphone-view-mode .ios-bottom-nav {
     width: auto;
     margin-top: 0;
     padding: 4px 10px;
-  }
-  .task-actions {
-    opacity: 1;
   }
   .ios-bottom-nav {
     display: flex !important;
@@ -1875,13 +2002,14 @@ body.iphone-view-mode .ios-bottom-nav {
   }
   .no-print,
   .add-task-btn,
-  .task-actions,
+  .task-menu-wrapper,
   .drag-handle,
   .modal-backdrop,
   .ios-bottom-nav,
   .ios-statusbar,
   .side-drawer,
-  .side-drawer-backdrop {
+  .side-drawer-backdrop,
+  .mobile-current-week-banner {
     display: none !important;
   }
   body {
@@ -1894,66 +2022,4 @@ body.iphone-view-mode .ios-bottom-nav {
     margin: 0 !important;
     padding: 10px !important;
   }
-}  /* =========================================================
-     15. DOKUMENTEN-DIREKTZUGRIFF IN DER AUFGABEN-ÜBERSICHT
-         & AUSBLENDEN DER DATUMS-BADGES BEI AUFGABEN
-     ========================================================= */
-  .date-tag {
-    display: none !important;
-  }
-
-  .task-docs-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 6px;
-  }
-
-  .task-doc-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--primary-light);
-    color: var(--primary-dark);
-    border: 1px solid var(--primary-border);
-    border-radius: 6px;
-    padding: 2px 8px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    cursor: pointer;
-    max-width: 100%;
-    transition: all 0.15s ease;
-  }
-
-  .task-doc-chip:hover {
-    background: var(--primary);
-    color: #FFFFFF;
-    border-color: var(--primary);
-  }
-
-  .task-doc-chip.solution-chip {
-    background: var(--success-bg);
-    color: var(--success-text);
-    border-color: var(--success-border);
-  }
-
-  .task-doc-chip.solution-chip:hover {
-    background: var(--success-text);
-    color: #FFFFFF;
-  }
-
-  .task-doc-chip-title {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 175px;
-  }
-
-  .cell-docs-footer {
-    margin-top: 6px;
-    padding-top: 6px;
-    border-top: 1px dashed var(--primary-border);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
+}
