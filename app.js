@@ -1561,6 +1561,146 @@ async function deleteModuleDoc(docId) {
   }
 }
 
+/* =========================================================
+   DOKUMENT-VORSCHAU & NACHTRÄGLICHE EINSORTIERUNG ÄNDERN
+   ========================================================= */
+function ensureEditDocModalExists() {
+  if (document.getElementById('editDocModal')) return;
+
+  const modalBackdrop = document.createElement('div');
+  modalBackdrop.className = 'modal-backdrop';
+  modalBackdrop.id = 'editDocModal';
+  modalBackdrop.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h3>✏️ Dokument-Einsortierung ändern</h3>
+        <button class="modal-close" onclick="closeModal('editDocModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editDocIdInput" value="">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label for="editDocTitleInput">Titel / Anzeigename des Dokuments</label>
+          <input type="text" id="editDocTitleInput" class="full-width" onkeydown="if(event.key==='Enter') saveEditedDoc()">
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="editDocModuleSelect">Modul / Fach</label>
+            <select id="editDocModuleSelect" class="select-box full-width"></select>
+          </div>
+          <div class="form-group">
+            <label for="editDocCategorySelect">Kategorie</label>
+            <select id="editDocCategorySelect" class="select-box full-width"></select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 14px;">
+          <label for="editDocWeekSelect">Zugehörige Semesterwoche</label>
+          <select id="editDocWeekSelect" class="select-box full-width"></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('editDocModal')">Abbrechen</button>
+        <button class="btn btn-primary" onclick="saveEditedDoc()">💾 Einsortierung speichern</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modalBackdrop);
+}
+
+function openEditDocModal(docId, event = null) {
+  if (event) event.stopPropagation();
+  ensureEditDocModalExists();
+
+  const doc = cachedDocsList.find(d => d.id === docId);
+  if (!doc) return;
+
+  // Falls die Vorschau offen war, diese schließen
+  closeModal('docPreviewModal');
+
+  const modSel = document.getElementById('editDocModuleSelect');
+  const catSel = document.getElementById('editDocCategorySelect');
+  const weekSel = document.getElementById('editDocWeekSelect');
+  const titleInp = document.getElementById('editDocTitleInput');
+  const idInp = document.getElementById('editDocIdInput');
+
+  if (idInp) idInp.value = doc.id;
+  if (titleInp) titleInp.value = doc.title || doc.fileName || '';
+
+  if (modSel) {
+    modSel.innerHTML = appState.modules.map(m =>
+      `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} (${escapeHtml(m.fullName)})</option>`
+    ).join('');
+    modSel.value = doc.module;
+  }
+
+  if (catSel) {
+    catSel.innerHTML = DOC_CATEGORIES.map(c =>
+      `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`
+    ).join('');
+    catSel.value = doc.category || 'Vorlesung';
+  }
+
+  if (weekSel) {
+    weekSel.innerHTML = `<option value="">Allgemein / Ohne feste Woche</option>` +
+      appState.weeks.map(w => {
+        const oneLine = w.weekLabel.replace(/\n/g, ' ');
+        return `<option value="${escapeAttr(oneLine)}">${escapeHtml(oneLine)}</option>`;
+      }).join('');
+
+    // Passende Woche auswählen (auch wenn sich Zeilenumbrüche leicht unterscheiden)
+    const savedWeek = (doc.weekLabel || '').trim();
+    const savedWeekShort = savedWeek.split('(')[0].trim().toLowerCase();
+    let matchedValue = '';
+    for (const opt of weekSel.options) {
+      if (!opt.value) continue;
+      if (opt.value === savedWeek || (savedWeekShort && opt.value.toLowerCase().startsWith(savedWeekShort))) {
+        matchedValue = opt.value;
+        break;
+      }
+    }
+    weekSel.value = matchedValue;
+  }
+
+  openModal('editDocModal');
+}
+
+async function saveEditedDoc() {
+  const docId = document.getElementById('editDocIdInput')?.value;
+  if (!docId) return;
+
+  const doc = cachedDocsList.find(d => d.id === docId);
+  if (!doc) return;
+
+  const newTitle = (document.getElementById('editDocTitleInput')?.value || '').trim();
+  const newMod = document.getElementById('editDocModuleSelect')?.value || doc.module;
+  const newCat = document.getElementById('editDocCategorySelect')?.value || doc.category;
+  const newWeek = document.getElementById('editDocWeekSelect')?.value || '';
+
+  doc.title = newTitle || doc.fileName || doc.title;
+  doc.module = newMod;
+  doc.category = newCat;
+  doc.weekLabel = newWeek;
+
+  try {
+    const db = await openDocsDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DOCS_STORE_NAME, 'readwrite');
+      tx.objectStore(DOCS_STORE_NAME).put(doc);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    await refreshDocsCache();
+    closeModal('editDocModal');
+    renderAll();
+
+    const weekInfo = newWeek ? newWeek.split('(')[0].trim() : 'Allgemein';
+    showToast(`✅ Einsortierung geändert: ${newMod} • ${newCat} (${weekInfo})`);
+  } catch (e) {
+    console.error('Fehler beim Aktualisieren des Dokuments:', e);
+    showToast('❌ Änderungen konnten nicht gespeichert werden.');
+  }
+}
+
 function previewModuleDoc(docId) {
   const doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) return;
@@ -1569,6 +1709,21 @@ function previewModuleDoc(docId) {
   const dlBtn = document.getElementById('docPreviewDownloadBtn');
   dlBtn.href = doc.dataUrl;
   dlBtn.download = doc.fileName || doc.title;
+
+  // "Einsortierung ändern"-Button direkt im Vorschau-Modal ergänzen
+  let editBtn = document.getElementById('docPreviewEditBtn');
+  if (!editBtn && dlBtn && dlBtn.parentElement) {
+    editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.id = 'docPreviewEditBtn';
+    editBtn.className = 'btn btn-outline';
+    editBtn.style.marginRight = 'auto';
+    dlBtn.parentElement.insertBefore(editBtn, dlBtn.parentElement.firstChild);
+  }
+  if (editBtn) {
+    editBtn.textContent = '✏️ Einsortierung ändern';
+    editBtn.onclick = () => openEditDocModal(doc.id);
+  }
 
   if (doc.mimeType.includes('pdf')) {
     body.innerHTML = `<iframe src="${doc.dataUrl}" style="width:100%; height:65vh; border:none; border-radius:8px;"></iframe>`;
@@ -1585,12 +1740,6 @@ function previewModuleDoc(docId) {
     `;
   }
   openModal('docPreviewModal');
-}
-
-function formatFileSize(bytes) {
-  if (!bytes) return '0 KB';
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function renderModuleDocsView() {
@@ -1617,12 +1766,13 @@ function renderModuleDocsView() {
                 <div class="doc-item-title" title="${escapeAttr(doc.title)}">📄 ${escapeHtml(doc.title)}</div>
                 <div class="doc-item-meta">
                   <span class="doc-cat-badge ${isSolution ? 'doc-cat-solution' : ''}">${escapeHtml(doc.category)}</span>
-                  ${doc.weekLabel ? `<span>• ${escapeHtml(doc.weekLabel.split('(')[0].trim())}</span>` : ''}
+                  ${doc.weekLabel ? `<span>• ${escapeHtml(doc.weekLabel.split('(')[0].trim())}</span>` : '<span>• Allgemein</span>'}
                   <span>• ${formatFileSize(doc.sizeBytes)}</span>
                 </div>
               </div>
               <div class="doc-item-actions">
                 <button class="btn btn-outline btn-sm" onclick="previewModuleDoc('${escapeAttr(doc.id)}')" title="Vorschau">👁️</button>
+                <button class="btn btn-outline btn-sm" onclick="openEditDocModal('${escapeAttr(doc.id)}', event)" title="Einsortierung (Woche, Modul, Kategorie, Titel) ändern">✏️</button>
                 <a class="btn btn-outline btn-sm" href="${doc.dataUrl}" download="${escapeAttr(doc.fileName || doc.title)}" title="Herunterladen">⬇️</a>
                 <button class="btn btn-danger-outline btn-sm" onclick="deleteModuleDoc('${escapeAttr(doc.id)}')" title="Löschen">🗑️</button>
               </div>
