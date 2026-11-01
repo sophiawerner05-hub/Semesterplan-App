@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="rose">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>🎓 Semesterplan App – WiSe 26/27</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Offizielle Google Identity Services Bibliothek für OAuth2 -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+
+  <!-- TOP HEADER & MENU ACTIONS -->
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-icon">🎓</span>
+        <div>
+          <div class="brand-title-row">
+            <h1>Semesterplan App</h1>
+            <span class="brand-badge" id="connectionBadge">Lokal & Offline-fähig</span>
+          </div>
+          <div class="brand-subtitle">Standalone Eclipse Web-App • Synchron mit Google Tasks, Kalender & Gmail</div>
+        </div>
+      </div>
+
+      <div class="action-bar">
+        <div class="theme-picker-wrapper" title="Farbschema wählen">
+          <label for="themeSelect" class="sr-only">Farbschema</label>
+          <select id="themeSelect" class="theme-select" onchange="changeTheme(this.value)">
+            <option value="rose">🌸 Original Rosa</option>
+            <option value="ocean">🌊 Ozean Blau</option>
+            <option value="forest">🌿 Waldgrün</option>
+            <option value="lavender">🔮 Lavendel</option>
+            <option value="dark">🌙 Dark Mode (Rose)</option>
+          </select>
+        </div>
+
+        <button class="btn btn-header" onclick="openTaskModal()" title="Neue Aufgabe anlegen">➕ Neue Aufgabe</button>
+        <button class="btn btn-header" onclick="syncAndClean()" id="syncBtn">🔄 Google Sync</button>
+        <button class="btn btn-header" onclick="openModal('testatModal')">📥 CAD-Testate</button>
+        <button class="btn btn-header" onclick="openEmailPreview()">📧 Briefing</button>
+        <button class="btn btn-header" onclick="openModal('googleSetupModal')">☁️ Google Kopplung</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- STATUS & QUICK LINKS STRIP -->
+    <div class="integration-strip">
+      <div class="status-group">
+        <span class="status-pill" id="syncStatusPill">⏰ Auto-Sync: Bereit</span>
+        <span id="overallStatusText" class="overall-status-text"></span>
+      </div>
+      <div class="quick-links">
+        <a href="https://calendar.google.com/calendar/r" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📅 Kalender</a>
+        <a href="https://tasks.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✅ Tasks</a>
+        <a href="https://mail.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✉️ Gmail</a>
+        <button class="btn btn-outline btn-sm" onclick="exportCSV()" title="Als CSV-Datei exportieren">💾 CSV</button>
+        <button class="btn btn-outline btn-sm" onclick="window.print()" title="Aktuelle Ansicht als PDF drucken">🖨️ PDF</button>
+        <button class="btn btn-outline btn-sm" onclick="resetToOriginal()" title="Auf den Ursprungsplan zurücksetzen">↺ Reset</button>
+      </div>
+    </div>
+
+    <!-- DASHBOARD PROGRESS CARDS -->
+    <div class="dashboard-grid" id="dashboardCards"></div>
+
+    <!-- TOOLBAR & TABS -->
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="tab-btn active" id="tabBtnTable" onclick="switchTab('table')">📊 Semesterplan</button>
+        <button class="tab-btn" id="tabBtnFocus" onclick="switchTab('focus')">🎯 Wochen-Fokus & Rückstände</button>
+        <button class="tab-btn" id="tabBtnEmail" onclick="switchTab('email')">📧 E-Mail-Briefing</button>
+      </div>
+
+      <div class="filter-controls" id="tableFilters">
+        <input type="text" id="searchInput" class="input-search" placeholder="🔍 Suche (z.B. Testat, ÜB 3, FEM)..." oninput="renderAll()">
+        <select id="statusFilter" class="select-box" onchange="renderAll()">
+          <option value="all">Alle Aufgaben</option>
+          <option value="open">⬜ Nur offene</option>
+          <option value="done">✅ Nur erledigte</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="toggleLayoutBtn" onclick="toggleCompactLayout()" title="Wechselt zwischen Tabellen- und Kartenansicht (ideal für Split-Screen)">📱 Ansicht wechseln</button>
+        <button class="btn btn-outline btn-sm" id="clearModuleFilterBtn" style="display:none;" onclick="setModuleFilter(null)">✖ Filter aufheben</button>
+      </div>
+    </div>
+
+    <!-- TAB 1: TABLE / RESPONSIVE CARDS -->
+    <div id="viewTable" class="table-wrapper">
+      <table id="semesterTable">
+        <thead id="tableHead"></thead>
+        <tbody id="tableBody"></tbody>
+        <tfoot id="tableFoot"></tfoot>
+      </table>
+    </div>
+
+    <!-- TAB 2: FOCUS & OVERDUE -->
+    <div id="viewFocus" class="hidden">
+      <div class="focus-toolbar">
+        <label for="focusWeekSelect" class="focus-label">Woche auswählen:</label>
+        <select id="focusWeekSelect" class="select-box" onchange="renderFocusView()"></select>
+        <button class="btn btn-outline btn-sm" onclick="selectCurrentCalendarWeek()">📍 Aktuelle Kalenderwoche</button>
+        <button class="btn btn-primary btn-sm" onclick="openTaskModal(parseInt(document.getElementById('focusWeekSelect').value, 10))">➕ Aufgabe in dieser Woche</button>
+      </div>
+      <div class="focus-grid">
+        <div class="panel">
+          <h2>
+            <span id="focusWeekTitle">📅 Aufgaben dieser Woche</span>
+            <span id="focusWeekProgress" class="focus-progress-badge"></span>
+          </h2>
+          <div id="focusUpcomingContainer"></div>
+        </div>
+        <div class="panel">
+          <h2>⚠️ Noch offen aus Vorwochen</h2>
+          <div id="focusOverdueContainer"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: EMAIL BRIEFING -->
+    <div id="viewEmail" class="hidden">
+      <div class="panel email-panel">
+        <h2>
+          <span>📧 Dein Sonntags-Briefing (Vorschau)</span>
+          <div class="email-actions">
+            <button class="btn btn-outline btn-sm" onclick="triggerMailtoFallback()">✉️ Im Mail-Programm öffnen</button>
+            <button class="btn btn-primary btn-sm" onclick="sendBriefingViaGmailAPI()">📨 Direkt via Gmail API senden</button>
+          </div>
+        </h2>
+        <div id="emailPreviewContainer" style="margin-top: 16px;"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN -->
+  <div class="modal-backdrop" id="taskModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="taskModalTitle">➕ Aufgabe hinzufügen</h3>
+        <button class="modal-close" onclick="closeModal('taskModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editTaskWeekIdx" value="">
+        <input type="hidden" id="editTaskOrigModule" value="">
+        <input type="hidden" id="editTaskItemIdx" value="">
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="taskModuleSelect">Modul / Fach</label>
+            <select id="taskModuleSelect" class="select-box full-width"></select>
+          </div>
+          <div class="form-group">
+            <label for="taskWeekSelect">Semesterwoche</label>
+            <select id="taskWeekSelect" class="select-box full-width"></select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 14px;">
+          <label for="taskTextInput">Aufgabenbeschreibung</label>
+          <input type="text" id="taskTextInput" placeholder="z.B. Vorlesung V4 nacharbeiten, Übungsblatt 3, Testat..." onkeydown="if(event.key==='Enter') saveTaskFromModal()">
+        </div>
+
+        <div class="form-grid" style="margin-top: 14px;">
+          <div class="form-group">
+            <label for="taskDueDateInput">Optionales genaues Datum (für Kalender / Abgabe)</label>
+            <input type="date" id="taskDueDateInput">
+          </div>
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="taskSyncCalendarCheck">
+              <span>Zusätzlich als Termin im Google Kalender eintragen</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="taskDoneCheck">
+              <span>Bereits erledigt (✅)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger-outline" id="deleteTaskModalBtn" style="display:none; margin-right:auto;" onclick="deleteTaskFromModal()">🗑️ Löschen</button>
+        <button class="btn btn-outline" onclick="closeModal('taskModal')">Abbrechen</button>
+        <button class="btn btn-primary" onclick="saveTaskFromModal()">💾 Speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: CAD TESTATE (1-5) -->
+  <div class="modal-backdrop" id="testatModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📥 CAD-Testate (1 bis 5) verknüpfen</h3>
+        <button class="modal-close" onclick="closeModal('testatModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">
+          Gib die Fälligkeitsdaten der 5 CAD-Testate ein. Die App ordnet sie automatisch der passenden Semesterwoche zu und synchronisiert sie auf Wunsch direkt mit Google Tasks & deinem Google Kalender.
+        </p>
+        <div class="testat-inputs">
+          <div class="form-group"><label for="testatDate1">Testat 1</label><input type="date" id="testatDate1" value="2026-10-30"></div>
+          <div class="form-group"><label for="testatDate2">Testat 2</label><input type="date" id="testatDate2" value="2026-11-13"></div>
+          <div class="form-group"><label for="testatDate3">Testat 3</label><input type="date" id="testatDate3" value="2026-12-04"></div>
+          <div class="form-group"><label for="testatDate4">Testat 4</label><input type="date" id="testatDate4" value="2027-01-15"></div>
+          <div class="form-group"><label for="testatDate5">Testat 5</label><input type="date" id="testatDate5" value="2027-02-12"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('testatModal')">Abbrechen</button>
+        <button class="btn btn-primary" onclick="importCADTestateInApp()">✅ Testate speichern & synchronisieren</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: GOOGLE API SETUP & BACKUP -->
+  <div class="modal-backdrop" id="googleSetupModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>☁️ Google API Live-Kopplung & Datensicherung</h3>
+        <button class="modal-close" onclick="closeModal('googleSetupModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label for="clientIdInput">Deine Google OAuth 2.0 Client-ID (aus der Google Cloud Console)</label>
+          <input type="text" id="clientIdInput" placeholder="1234567890-abcdefg.apps.googleusercontent.com">
+          <small class="field-note">
+            Hinweis: Eine Client-ID beginnt mit Zahlen und endet auf <code>.apps.googleusercontent.com</code> (nicht mit <code>GOCSPX-</code>, das wäre das Client-Secret).
+          </small>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autoImportCalendarCheck" checked onchange="saveGoogleConfig()">
+            <span>Kalender-Termine mit Modulnamen (z.B. „CAD“, „Mathe 2“, „Testat“) beim Sync automatisch importieren</span>
+          </label>
+        </div>
+
+        <div class="sync-action-box">
+          <button class="btn btn-primary" onclick="saveGoogleConfigAndConnect()">🔗 Mit Google verbinden & synchronisieren</button>
+          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich erzwingen</button>
+        </div>
+
+        <hr class="modal-divider">
+
+        <h4 style="margin-bottom: 8px; color: var(--primary-dark);">💾 Lokales Backup (JSON Export / Import)</h4>
+        <p class="modal-hint">Sichere deinen gesamten Plan als Datei oder übertrage ihn auf ein anderes Gerät:</p>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn btn-outline btn-sm" onclick="exportJSONBackup()">⬇️ JSON-Backup herunterladen</button>
+          <label class="btn btn-outline btn-sm" style="cursor: pointer;">
+            ⬆️ JSON-Backup einspielen
+            <input type="file" accept=".json" style="display: none;" onchange="importJSONBackup(event)">
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="closeModal('googleSetupModal')">Schließen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast" class="toast"></div>
+
+  <!-- MODULARE JAVASCRIPT-DATEIEN FÜR ECLIPSE -->
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+  <script src="google-sync.js"></script>
+</body>
+</html>
