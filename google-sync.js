@@ -1,24 +1,30 @@
 /* =========================================================
    DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
-   - Kompakte Benennung OHNE Wochenzahl, OHNE eckige Klammern & OHNE Emojis:
-     Format: "ModSim: Vorlesung: V2 – Teil 1..."
-   - Keine platzraubenden "Woche X"-Oberaufgaben im Kalender
-   - Alle Aufgaben werden am MONTAG der jeweiligen Woche im
-     Kalender & in Google Tasks eingetragen
-   - Automatischer wöchentlicher E-Mail-Briefing-Versand
+   - Google Account dauerhaft merken (login_hint & Auto-Reconnect)
+   - Geräteübergreifender Dokumentenspeicher via Google Drive API
+     (Laptop <-> Handy Synchronisation im Ordner "Semesterplan_App_Sync")
+   - Direkter Dokumenten-Import aus Google Drive
+   - Google Tasks, Kalender (Montags-Modus ohne Emojis/Klammern) & Gmail
    ========================================================= */
 const DEFAULT_GOOGLE_CLIENT_ID = '420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com';
 const TOKEN_STORAGE_KEY = 'semesterplan_google_access_token';
 const TOKEN_EXPIRY_KEY = 'semesterplan_google_token_expiry';
+const USER_EMAIL_STORAGE_KEY = 'semesterplan_google_user_email';
+const DRIVE_SYNC_FOLDER_NAME = 'Semesterplan_App_Sync';
+
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
   'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/gmail.send'
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/userinfo.email'
 ].join(' ');
 
 let googleAccessToken = null;
 let tokenClient = null;
 let cachedListMap = {};
+let cachedDriveFolderId = null;
 let autoSyncInterval = null;
 let isSyncInProgress = false;
 
@@ -30,6 +36,10 @@ function getConfiguredClientId() {
   return DEFAULT_GOOGLE_CLIENT_ID;
 }
 
+function getRememberedUserEmail() {
+  return localStorage.getItem(USER_EMAIL_STORAGE_KEY) || '';
+}
+
 function isGoogleConnected() {
   return !!googleAccessToken;
 }
@@ -37,29 +47,46 @@ function isGoogleConnected() {
 function updateGoogleConnectedUI(connected) {
   const badge = document.getElementById('connectionBadge');
   const pill = document.getElementById('syncStatusPill');
+  const drivePill = document.getElementById('driveStatusPill');
   const btnText = document.getElementById('googleBtnText');
+  const accountInfo = document.getElementById('savedGoogleAccountInfo');
+  const drawerAccount = document.getElementById('drawerAccountLabel');
+  const rememberedEmail = getRememberedUserEmail();
+
   if (connected) {
     if (badge) {
-      badge.textContent = '☁️ Live mit Google verbunden';
+      badge.textContent = rememberedEmail ? `☁️ ${rememberedEmail}` : '☁️ Live mit Google verbunden';
       badge.style.background = '#117864';
     }
     if (pill) {
-      pill.textContent = '🔄 Auto-Sync: Aktiv (Montags-Modus)';
+      pill.textContent = '🔄 Auto-Sync: Aktiv';
+    }
+    if (drivePill) {
+      drivePill.textContent = '☁️ Drive-Speicher: Synchron (Laptop & Handy)';
     }
     if (btnText) {
-      btnText.textContent = 'Verbunden (Sync)';
+      btnText.textContent = rememberedEmail ? `Sync (${rememberedEmail.split('@')[0]})` : 'Verbunden (Sync)';
+    }
+    if (drawerAccount && rememberedEmail) {
+      drawerAccount.textContent = `☁️ ${rememberedEmail}`;
     }
   } else {
     if (badge) {
-      badge.textContent = 'Lokal & Offline-fähig';
+      badge.textContent = rememberedEmail ? `Gemerkt: ${rememberedEmail}` : 'Lokal & Offline-fähig';
       badge.style.background = '';
     }
     if (pill) {
       pill.textContent = '⏰ Auto-Sync: Bereit';
     }
-    if (btnText) {
-      btnText.textContent = 'Google Login';
+    if (drivePill) {
+      drivePill.textContent = '☁️ Drive-Speicher: Lokal';
     }
+    if (btnText) {
+      btnText.textContent = rememberedEmail ? `Login (${rememberedEmail.split('@')[0]})` : 'Google Login';
+    }
+  }
+  if (accountInfo && rememberedEmail) {
+    accountInfo.textContent = `✅ Gemerkter Google-Account für Auto-Sync: ${rememberedEmail}`;
   }
 }
 
@@ -84,22 +111,28 @@ function initGoogleSyncSettingsUI() {
     startBackgroundAutoSync();
     setTimeout(async () => {
       await syncWithGoogleTasksAPI(true);
+      await syncDocumentsWithGoogleDrive(true);
       await checkAndSendWeeklyAutoEmail();
     }, 600);
+  } else {
+    updateGoogleConnectedUI(false);
+    // Falls Account bereits gemerkt wurde, beim ersten Klick/Start nahtlos wiederverbinden
+    if (getRememberedUserEmail()) {
+      setTimeout(() => {
+        if (!isGoogleConnected() && typeof google !== 'undefined') {
+          trySilentTokenRestore();
+        }
+      }, 1200);
+    }
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && isGoogleConnected()) {
       syncWithGoogleTasksAPI(true);
-    }
-  });
-  window.addEventListener('focus', () => {
-    if (isGoogleConnected()) {
-      syncWithGoogleTasksAPI(true);
+      syncDocumentsWithGoogleDrive(true);
     }
   });
 }
-
 window.addEventListener('DOMContentLoaded', initGoogleSyncSettingsUI);
 
 function startBackgroundAutoSync() {
@@ -107,6 +140,7 @@ function startBackgroundAutoSync() {
   autoSyncInterval = setInterval(() => {
     if (googleAccessToken) {
       syncWithGoogleTasksAPI(true);
+      syncDocumentsWithGoogleDrive(true);
       checkAndSendWeeklyAutoEmail();
     }
   }, 60 * 1000);
@@ -137,24 +171,40 @@ function saveGoogleConfigAndConnect() {
   connectGoogleLive();
 }
 
+async function fetchAndRememberGoogleUserProfile() {
+  try {
+    const info = await googleApiFetch('https://www.googleapis.com/oauth2/v2/userinfo');
+    if (info && info.email) {
+      localStorage.setItem(USER_EMAIL_STORAGE_KEY, info.email);
+      updateGoogleConnectedUI(true);
+    }
+  } catch (e) {
+    console.warn('Konnte Nutzer-E-Mail nicht abrufen:', e);
+  }
+}
+
 function initGoogleAuth() {
   if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
     showToast('❌ Google-Login-Skript konnte nicht geladen werden (Internetverbindung prüfen).');
     return false;
   }
   const clientId = getConfiguredClientId();
+  const rememberedEmail = getRememberedUserEmail();
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: GOOGLE_SCOPES,
+    hint: rememberedEmail || undefined,
     callback: async (tokenResponse) => {
       if (tokenResponse && tokenResponse.access_token) {
         googleAccessToken = tokenResponse.access_token;
         const expiresInSec = parseInt(tokenResponse.expires_in || '3599', 10);
         localStorage.setItem(TOKEN_STORAGE_KEY, googleAccessToken);
         localStorage.setItem(TOKEN_EXPIRY_KEY, String(Date.now() + (expiresInSec - 60) * 1000));
+        await fetchAndRememberGoogleUserProfile();
         updateGoogleConnectedUI(true);
         startBackgroundAutoSync();
         await syncWithGoogleTasksAPI(false);
+        await syncDocumentsWithGoogleDrive(false);
         await checkAndSendWeeklyAutoEmail();
       }
     }
@@ -162,18 +212,33 @@ function initGoogleAuth() {
   return true;
 }
 
+function trySilentTokenRestore() {
+  if (!initGoogleAuth()) return;
+  const rememberedEmail = getRememberedUserEmail();
+  tokenClient.requestAccessToken({
+    prompt: 'none',
+    login_hint: rememberedEmail || undefined
+  });
+}
+
 function connectGoogleLive() {
   if (!initGoogleAuth()) return;
-  tokenClient.requestAccessToken({ prompt: '' });
+  const rememberedEmail = getRememberedUserEmail();
+  tokenClient.requestAccessToken({
+    prompt: '',
+    login_hint: rememberedEmail || undefined
+  });
 }
 
 async function googleApiFetch(url, options = {}) {
   if (!googleAccessToken) throw new Error('Nicht mit Google verbunden.');
   const headers = {
     'Authorization': `Bearer ${googleAccessToken}`,
-    'Content-Type': 'application/json',
     ...(options.headers || {})
   };
+  if (!headers['Content-Type'] && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
     googleAccessToken = null;
@@ -181,7 +246,7 @@ async function googleApiFetch(url, options = {}) {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     localStorage.removeItem(TOKEN_EXPIRY_KEY);
     updateGoogleConnectedUI(false);
-    throw new Error('Google-Sitzung abgelaufen. Bitte kurz neu verbinden.');
+    throw new Error('Google-Sitzung abgelaufen. Bitte kurz auf Google Sync klicken.');
   }
   if (!response.ok) {
     const errText = await response.text();
@@ -190,6 +255,289 @@ async function googleApiFetch(url, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
+/* =========================================================
+   GERÄTEÜBERGREIFENDER DOKUMENTENSPEICHER ÜBER GOOGLE DRIVE
+   (AUCH AUF DEM HANDY ALLE VOM LAPTOP HOCHGELADENEN DATEIEN SICHTBAR)
+   ========================================================= */
+async function ensureDriveSyncFolder() {
+  if (cachedDriveFolderId) return cachedDriveFolderId;
+  const q = encodeURIComponent(`name = '${DRIVE_SYNC_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+  const data = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+  if (data.files && data.files.length > 0) {
+    cachedDriveFolderId = data.files[0].id;
+    return cachedDriveFolderId;
+  }
+  const created = await googleApiFetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: DRIVE_SYNC_FOLDER_NAME,
+      mimeType: 'application/vnd.google-apps.folder'
+    })
+  });
+  cachedDriveFolderId = created.id;
+  return cachedDriveFolderId;
+}
+
+function dataUrlToBlob(dataUrl, fallbackMime = 'application/octet-stream') {
+  const parts = dataUrl.split(',');
+  const mimeMatch = parts[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : fallbackMime;
+  const bstr = atob(parts[1] || '');
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new Blob([u8arr], { type: mime });
+}
+
+async function uploadLocalDocToGoogleDrive(docRecord) {
+  if (!googleAccessToken || !docRecord.dataUrl || docRecord.driveFileId) return;
+  const folderId = await ensureDriveSyncFolder();
+  const metadata = {
+    name: docRecord.fileName || docRecord.title,
+    parents: [folderId],
+    appProperties: {
+      spDocId: docRecord.id,
+      spModule: docRecord.module || '',
+      spCategory: docRecord.category || 'Vorlesung',
+      spWeekLabel: docRecord.weekLabel || '',
+      spTaskText: docRecord.taskText || '',
+      spTitle: docRecord.title || ''
+    }
+  };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', dataUrlToBlob(docRecord.dataUrl, docRecord.mimeType));
+
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${googleAccessToken}` },
+    body: form
+  });
+  if (res.ok) {
+    const uploaded = await res.json();
+    docRecord.driveFileId = uploaded.id;
+    docRecord.webViewLink = uploaded.webViewLink || '';
+  }
+}
+
+async function syncSingleDocMetadataToDrive(docRecord) {
+  if (!googleAccessToken || !docRecord.driveFileId) return;
+  try {
+    await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${docRecord.driveFileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: docRecord.title || docRecord.fileName,
+        appProperties: {
+          spDocId: docRecord.id,
+          spModule: docRecord.module || '',
+          spCategory: docRecord.category || 'Vorlesung',
+          spWeekLabel: docRecord.weekLabel || '',
+          spTaskText: docRecord.taskText || '',
+          spTitle: docRecord.title || ''
+        }
+      })
+    });
+  } catch (e) {
+    console.warn('Drive-Metadaten-Update fehlgeschlagen:', e);
+  }
+}
+
+async function deleteDocFromGoogleDrive(driveFileId) {
+  if (!googleAccessToken || !driveFileId) return;
+  try {
+    await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}`, {
+      method: 'DELETE'
+    });
+  } catch (e) {
+    console.warn('Datei war in Google Drive bereits entfernt:', e);
+  }
+}
+
+async function ensureDriveDocContentLoaded(docRecord) {
+  if (docRecord.dataUrl || !docRecord.driveFileId || !googleAccessToken) return;
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${docRecord.driveFileId}?alt=media`, {
+    headers: { 'Authorization': `Bearer ${googleAccessToken}` }
+  });
+  if (!response.ok) return;
+  const blob = await response.blob();
+  const dataUrl = await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+  docRecord.dataUrl = dataUrl;
+  await putDocRecordInDB(docRecord);
+}
+
+async function syncDocumentsWithGoogleDrive(silent = true) {
+  if (!googleAccessToken) return;
+  try {
+    const folderId = await ensureDriveSyncFolder();
+    // 1. Lokale Dokumente, die noch nicht im Drive-Ordner sind, hochladen
+    for (const localDoc of cachedDocsList) {
+      if (!localDoc.driveFileId && localDoc.dataUrl) {
+        await uploadLocalDocToGoogleDrive(localDoc);
+        await putDocRecordInDB(localDoc);
+      }
+    }
+
+    // 2. Vom Laptop hochgeladene Dokumente aus dem Drive-Ordner auf dieses Gerät (z.B. Handy) holen
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
+    const fields = encodeURIComponent('files(id,name,mimeType,size,webViewLink,appProperties,createdTime)');
+    const driveData = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=200`);
+    const driveFiles = driveData.files || [];
+    let pulledCount = 0;
+
+    for (const df of driveFiles) {
+      const props = df.appProperties || {};
+      const existsLocally = cachedDocsList.some(d =>
+        d.driveFileId === df.id ||
+        (props.spDocId && d.id === props.spDocId) ||
+        (d.module === props.spModule && (d.fileName || '').toLowerCase() === (df.name || '').toLowerCase())
+      );
+      if (existsLocally) continue;
+
+      const guess = analyzeFileForSmartSorting(df.name, props.spModule, props.spCategory, props.spWeekLabel, props.spTaskText);
+      const newDoc = {
+        id: props.spDocId || `doc_drive_${df.id}`,
+        driveFileId: df.id,
+        webViewLink: df.webViewLink || '',
+        module: props.spModule || guess.module,
+        category: props.spCategory || guess.category,
+        weekLabel: props.spWeekLabel !== undefined ? props.spWeekLabel : guess.weekLabel,
+        taskText: props.spTaskText !== undefined ? props.spTaskText : guess.taskText,
+        title: props.spTitle || (guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, df.name) : df.name),
+        fileName: df.name,
+        mimeType: df.mimeType || 'application/pdf',
+        sizeBytes: Number(df.size) || 0,
+        dataUrl: '', // Wird bei Bedarf oder direkt im Hintergrund geladen
+        uploadedAt: df.createdTime ? new Date(df.createdTime).getTime() : Date.now()
+      };
+      await putDocRecordInDB(newDoc);
+      cachedDocsList.push(newDoc);
+      pulledCount++;
+    }
+
+    if (pulledCount > 0) {
+      await refreshDocsCache();
+      renderAll();
+      if (!silent) {
+        showToast(`☁️ ${pulledCount} Dokument(e) aus deinem Google Drive synchronisiert!`);
+      }
+    }
+  } catch (e) {
+    console.warn('Google-Drive-Dokumentensynchronisation übersprungen:', e);
+  }
+}
+
+/* =========================================================
+   DIREKTER DOKUMENTEN-IMPORT AUS GOOGLE DRIVE (PICKER-MODAL)
+   ========================================================= */
+async function openGoogleDrivePickerModal() {
+  if (!isGoogleConnected()) {
+    showToast('🔗 Bitte verbinde zuerst kurz dein Google-Konto.');
+    connectGoogleLive();
+    return;
+  }
+  openModal('googleDriveModal');
+  await loadGoogleDriveFilesList();
+}
+
+async function loadGoogleDriveFilesList() {
+  const listContainer = document.getElementById('googleDriveFilesList');
+  const queryText = (document.getElementById('driveSearchInput')?.value || '').trim();
+  if (!listContainer) return;
+
+  showLoading('Durchsuche dein Google Drive...');
+  try {
+    let q = `mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
+    if (queryText) {
+      const safeQ = queryText.replace(/'/g, "\\'");
+      q += ` and name contains '${safeQ}'`;
+    }
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('files(id,name,mimeType,size,webViewLink,modifiedTime)')}&pageSize=40&orderBy=modifiedTime desc`;
+    const data = await googleApiFetch(url);
+    const files = data.files || [];
+
+    if (files.length === 0) {
+      listContainer.innerHTML = `<p style="text-align:center; padding:20px; color:var(--text-muted);">Keine passenden Dateien in deinem Google Drive gefunden.</p>`;
+      return;
+    }
+
+    listContainer.innerHTML = files.map(f => {
+      const alreadyAdded = cachedDocsList.some(d => d.driveFileId === f.id);
+      return `
+        <div class="doc-compact-item" style="padding:10px 12px;">
+          <div class="doc-item-info">
+            <div class="doc-item-title">☁️ ${escapeHtml(f.name)}</div>
+            <div class="doc-item-meta">
+              <span>${escapeHtml(f.mimeType)}</span>
+              ${f.size ? `<span>• ${formatFileSize(f.size)}</span>` : ''}
+            </div>
+          </div>
+          <div class="doc-item-actions">
+            ${alreadyAdded
+              ? `<span class="doc-cat-badge doc-cat-solution">✅ Bereits verknüpft</span>`
+              : `<button type="button" class="btn btn-primary btn-sm" onclick="importFileFromGoogleDrive('${escapeAttr(f.id)}', '${escapeAttr(f.name)}', '${escapeAttr(f.mimeType || '')}', ${Number(f.size) || 0}, '${escapeAttr(f.webViewLink || '')}')">📥 Übernehmen</button>`
+            }
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    listContainer.innerHTML = `<p style="color:var(--warning-text); padding:14px;">Fehler beim Laden aus Google Drive: ${escapeHtml(e.message)}</p>`;
+  } finally {
+    hideLoading();
+  }
+}
+
+async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes, webViewLink) {
+  if (cachedDocsList.some(d => d.driveFileId === driveId)) {
+    showToast('ℹ️ Dieses Dokument ist bereits im Semesterplan hinterlegt.');
+    return;
+  }
+  showLoading(`Importiere „${fileName}“ aus Google Drive...`);
+  try {
+    const fallbackMod = document.getElementById('docModuleSelect')?.value || '';
+    const fallbackCat = document.getElementById('docCategorySelect')?.value || '';
+    const fallbackWeek = document.getElementById('docWeekSelect')?.value || '';
+    const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek);
+
+    const newDoc = {
+      id: `doc_drive_${driveId}`,
+      driveFileId: driveId,
+      webViewLink: webViewLink || '',
+      module: guess.module,
+      category: guess.category,
+      weekLabel: guess.weekLabel || '',
+      taskText: guess.taskText || '',
+      title: guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, fileName) : fileName.replace(/\.[^/.]+$/, ''),
+      fileName: fileName,
+      mimeType: mimeType || 'application/pdf',
+      sizeBytes: sizeBytes || 0,
+      dataUrl: '',
+      uploadedAt: Date.now()
+    };
+
+    try {
+      await ensureDriveDocContentLoaded(newDoc);
+    } catch (e) {}
+
+    await putDocRecordInDB(newDoc);
+    await refreshDocsCache();
+    renderAll();
+    await loadGoogleDriveFilesList();
+    showToast(`✅ „${newDoc.title}“ zugeordnet (${newDoc.module})!`);
+  } finally {
+    hideLoading();
+  }
+}
+
+/* =========================================================
+   GOOGLE TASKS & KALENDER SYNCHRONISATION (MONTAGS-MODUS)
+   ========================================================= */
 async function fetchAllGoogleTasks(listId) {
   let allItems = [];
   let pageToken = '';
@@ -217,7 +565,6 @@ async function ensureModuleTaskLists(forceRefresh = false) {
     const cleanTitle = l.title.trim().replace(/^\[|\]$/g, '');
     listMap[cleanTitle] = l.id;
   });
-
   for (const mod of appState.modules) {
     if (!listMap[mod.shortName]) {
       const createdList = await googleApiFetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists', {
@@ -231,10 +578,6 @@ async function ensureModuleTaskLists(forceRefresh = false) {
   return listMap;
 }
 
-/* =========================================================
-   MONTAGS-BERECHNUNG & PLATZSPARENDE BENENNUNG
-   (OHNE WOCHENZAHL, OHNE ECKIGE KLAMMERN & OHNE EMOJIS)
-   ========================================================= */
 function getWeekMondayIso(weekIdx) {
   const week = appState.weeks[weekIdx];
   if (!week) return new Date().toISOString();
@@ -287,7 +630,6 @@ function buildTaskPayload(weekIdx, shortName, item) {
   const sundayStr = parsed ? formatDateDE(parsed.weekSun) : '';
   const mondayStr = parsed ? formatDateDE(parsed.weekMon) : '';
   let dueIso = mondayDueIso;
-
   if (item.dueDate && parsed) {
     const sunIsoDay = `${parsed.weekSun.getFullYear()}-${String(parsed.weekSun.getMonth() + 1).padStart(2, '0')}-${String(parsed.weekSun.getDate()).padStart(2, '0')}`;
     if (item.dueDate !== sunIsoDay) {
@@ -297,7 +639,6 @@ function buildTaskPayload(weekIdx, shortName, item) {
       item.dueDate = getWeekMondayDateString(weekIdx);
     }
   }
-
   return {
     title: buildCleanGoogleTitle(shortName, item.text),
     notes: `Modul: ${shortName} | Montag: ${mondayStr}${sundayStr ? ` (bis ${sundayStr})` : ''} | WocheID:${week.id}`,
@@ -306,15 +647,11 @@ function buildTaskPayload(weekIdx, shortName, item) {
   };
 }
 
-/* =========================================================
-   ECHTZEIT-EINZELAKTIONEN (BEI KLICK / DRAG & DROP IN DER APP)
-   ========================================================= */
 async function pushSingleTaskToggleToGoogle(weekIdx, shortName, item) {
   try {
     await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
-
     if (item.googleTaskId) {
       await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${item.googleTaskId}`, {
         method: 'PATCH',
@@ -339,7 +676,6 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
     await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
-
     const payload = buildTaskPayload(weekIdx, shortName, item);
     const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
       method: 'POST',
@@ -349,7 +685,6 @@ async function pushSingleTaskCreateToGoogle(weekIdx, shortName, item) {
     delete item.parentTaskId;
     item.lastSyncedDone = item.done;
     item.lastSyncedText = item.text;
-
     if (item.syncCalendar !== false) {
       await createOrUpdateCalendarEvent(weekIdx, shortName, item);
     }
@@ -365,7 +700,6 @@ async function pushSingleTaskMoveOrEditToGoogle(weekIdx, shortName, item) {
     await ensureModuleTaskLists();
     const listId = cachedListMap[shortName];
     if (!listId) return;
-
     const payload = buildTaskPayload(weekIdx, shortName, item);
     if (item.googleTaskId) {
       await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${item.googleTaskId}`, {
@@ -377,7 +711,6 @@ async function pushSingleTaskMoveOrEditToGoogle(weekIdx, shortName, item) {
     } else {
       await pushSingleTaskCreateToGoogle(weekIdx, shortName, item);
     }
-
     if (item.syncCalendar !== false) {
       await createOrUpdateCalendarEvent(weekIdx, shortName, item);
     }
@@ -400,9 +733,6 @@ async function deleteSingleTaskFromGoogle(shortName, googleTaskId) {
   }
 }
 
-/* =========================================================
-   VOLLSTÄNDIGE BIDIREKTIONALE SYNCHRONISATION & BEREINIGUNG
-   ========================================================= */
 async function syncWithGoogleTasksAPI(silent = false) {
   if (!googleAccessToken) {
     if (!silent) connectGoogleLive();
@@ -410,11 +740,9 @@ async function syncWithGoogleTasksAPI(silent = false) {
   }
   if (isSyncInProgress) return;
   isSyncInProgress = true;
-  if (!silent) showToast('🔄 Synchronisiere Aufgaben mit Google...');
-
+  if (!silent) showLoading('Synchronisiere mit Google Tasks, Kalender & Drive...');
   try {
     const listMap = await ensureModuleTaskLists(true);
-
     if (Array.isArray(appState.deletedGoogleTaskIds) && appState.deletedGoogleTaskIds.length > 0) {
       for (const delEntry of appState.deletedGoogleTaskIds) {
         const lId = listMap[delEntry.shortName];
@@ -439,14 +767,12 @@ async function syncWithGoogleTasksAPI(silent = false) {
       const deletedTaskIds = new Set(allRawTasks.filter(t => t.deleted).map(t => t.id));
       let activeGoogleTasks = allRawTasks.filter(t => !t.deleted && (t.title || '').trim() !== '');
 
-      // 1. Alte Wochen-Oberaufgaben identifizieren und bereinigen
       const legacyParentIds = new Set();
       for (const gTask of activeGoogleTasks) {
         if (isLegacyWeekHeaderTask(gTask, shortName)) {
           legacyParentIds.add(gTask.id);
         }
       }
-
       if (legacyParentIds.size > 0) {
         for (const gTask of activeGoogleTasks) {
           if (gTask.parent && legacyParentIds.has(gTask.parent)) {
@@ -475,8 +801,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
       }
 
       const matchedGoogleTaskIds = new Set();
-
-      // 2. Alle Wochen-Aufgaben abgleichen, von Klammern/Wochenzahlen/Emojis befreien und auf Montag datieren
       for (let wIdx = 0; wIdx < appState.weeks.length; wIdx++) {
         const week = appState.weeks[wIdx];
         const parsed = parseWeekDates(week.weekLabel);
@@ -488,11 +812,9 @@ async function syncWithGoogleTasksAPI(silent = false) {
           const cleanText = extractCleanTaskDescription(shortName, item.text);
           item.text = cleanText;
           const expectedCleanTitle = buildCleanGoogleTitle(shortName, cleanText);
-
           let matchedTask = item.googleTaskId
             ? activeGoogleTasks.find(t => t.id === item.googleTaskId && !matchedGoogleTaskIds.has(t.id))
             : null;
-
           if (!matchedTask) {
             matchedTask = activeGoogleTasks.find(t => {
               if (matchedGoogleTaskIds.has(t.id) || !t.title) return false;
@@ -504,7 +826,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
               return true;
             });
           }
-
           if (!matchedTask) {
             const payload = buildTaskPayload(wIdx, shortName, item);
             const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
@@ -520,7 +841,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
             matchedGoogleTaskIds.add(matchedTask.id);
             item.googleTaskId = matchedTask.id;
             delete item.parentTaskId;
-
             const googleIsDone = (matchedTask.status === 'completed');
             if (typeof item.lastSyncedDone === 'boolean') {
               if (googleIsDone !== item.lastSyncedDone && item.done === item.lastSyncedDone) {
@@ -533,7 +853,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
               item.inProgress = false;
               statusChangedFromGoogleCount++;
             }
-
             const desiredPayload = buildTaskPayload(wIdx, shortName, item);
             const currentDueDay = matchedTask.due ? matchedTask.due.slice(0, 10) : '';
             const desiredDueDay = desiredPayload.due.slice(0, 10);
@@ -541,7 +860,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
               matchedTask.title !== expectedCleanTitle ||
               currentDueDay !== desiredDueDay ||
               (matchedTask.status === 'completed') !== item.done;
-
             if (needsPatch) {
               await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
                 method: 'PATCH',
@@ -551,21 +869,17 @@ async function syncWithGoogleTasksAPI(silent = false) {
             item.lastSyncedDone = item.done;
             item.lastSyncedText = item.text;
           }
-
           if (item.googleEventId && item.syncCalendar !== false) {
             await createOrUpdateCalendarEvent(wIdx, shortName, item);
           }
         }
       }
 
-      // 3. Neu in Google Tasks erstellte Aufgaben importieren
       for (const gTask of activeGoogleTasks) {
         if (matchedGoogleTaskIds.has(gTask.id)) continue;
         if (isLegacyWeekHeaderTask(gTask, shortName)) continue;
-
         const cleanTaskText = extractCleanTaskDescription(shortName, gTask.title || '');
         if (!cleanTaskText) continue;
-
         let targetWeekIdx = -1;
         if (gTask.notes) {
           const idMatch = gTask.notes.match(/WocheID:(week_\d+)/);
@@ -580,7 +894,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
           const nowIdx = findWeekIndexByDate(new Date());
           targetWeekIdx = nowIdx !== -1 ? nowIdx : 0;
         }
-
         const targetWeek = appState.weeks[targetWeekIdx];
         const existingInCell = targetWeek.cells[shortName] || [];
         const duplicate = existingInCell.find(i => i.text.toLowerCase() === cleanTaskText.toLowerCase());
@@ -605,19 +918,21 @@ async function syncWithGoogleTasksAPI(silent = false) {
       importedFromGoogleCount += calImported;
     }
 
+    await syncDocumentsWithGoogleDrive(silent);
+
     saveState();
     renderAll();
-
     if (!silent) {
-      showToast('✅ Sync abgeschlossen!');
+      showToast('✅ Sync (Tasks, Kalender & Drive) abgeschlossen!');
     } else if (statusChangedFromGoogleCount > 0 || importedFromGoogleCount > 0) {
-      showToast('☁️ Änderungen aus Google Tasks automatisch übernommen!');
+      showToast('☁️ Änderungen aus Google automatisch übernommen!');
     }
   } catch (error) {
     console.error(error);
     if (!silent) showToast('❌ Synchronisationsfehler: ' + error.message);
   } finally {
     isSyncInProgress = false;
+    if (!silent) hideLoading();
   }
 }
 
@@ -626,10 +941,6 @@ async function forceFullResync() {
   await syncWithGoogleTasksAPI(false);
 }
 
-/* =========================================================
-   GOOGLE KALENDER INTEGRATION
-   (OHNE WOCHENZAHL, OHNE ECKIGE KLAMMERN & OHNE EMOJIS IM TITEL)
-   ========================================================= */
 async function createOrUpdateCalendarEvent(weekIdx, shortName, item) {
   if (!googleAccessToken) return;
   try {
@@ -638,14 +949,12 @@ async function createOrUpdateCalendarEvent(weekIdx, shortName, item) {
     const endObj = new Date(startObj.getTime() + 24 * 60 * 60 * 1000);
     const endDate = endObj.toISOString().slice(0, 10);
     const cleanSummary = buildCleanGoogleTitle(shortName, item.text);
-
     const eventPayload = {
       summary: cleanSummary,
       description: `Semesterplan-Aufgabe für ${stripAllEmojisAndBrackets(shortName)}`,
       start: { date: startDate },
       end: { date: endDate }
     };
-
     if (item.googleEventId) {
       await googleApiFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${item.googleEventId}`, {
         method: 'PATCH',
@@ -672,11 +981,9 @@ async function syncEventsFromGoogleCalendar() {
     const calData = await googleApiFetch(url);
     const events = calData.items || [];
     let importedCount = 0;
-
     for (const ev of events) {
       const rawSummary = (ev.summary || '').trim();
       if (!rawSummary) continue;
-
       let matchedMod = null;
       for (const mod of appState.modules) {
         const regex = new RegExp(`\\b(${mod.shortName}|${mod.fullName.split(':')[0]})\\b`, 'i');
@@ -689,18 +996,14 @@ async function syncEventsFromGoogleCalendar() {
         matchedMod = 'CAD';
       }
       if (!matchedMod) continue;
-
       const rawDateStr = ev.start?.date || (ev.start?.dateTime ? ev.start.dateTime.slice(0, 10) : null);
       if (!rawDateStr) continue;
-
       const p = rawDateStr.split('-');
       const eventDate = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 12, 0, 0);
       const weekIdx = findWeekIndexByDate(eventDate);
       if (weekIdx === -1) continue;
-
       const cleanTitle = extractCleanTaskDescription(matchedMod, rawSummary);
       if (!cleanTitle) continue;
-
       const expectedSummary = buildCleanGoogleTitle(matchedMod, cleanTitle);
       if (rawSummary !== expectedSummary) {
         try {
@@ -710,7 +1013,6 @@ async function syncEventsFromGoogleCalendar() {
           });
         } catch (e) {}
       }
-
       const cellItems = appState.weeks[weekIdx].cells[matchedMod] || [];
       const exists = cellItems.some(i =>
         i.googleEventId === ev.id || i.text.toLowerCase() === cleanTitle.toLowerCase()
@@ -752,8 +1054,8 @@ async function sendBriefingViaGmailAPI(silent = false) {
     if (!silent) connectGoogleLive();
     return false;
   }
+  if (!silent) showLoading('Sende Wochen-Briefing über Gmail API...');
   try {
-    if (!silent) showToast('📨 Sende HTML-Briefing über Gmail API...');
     const { subject, htmlBody } = buildEmailHtmlObject();
     const mimeLines = [
       `To: me`,
@@ -768,16 +1070,13 @@ async function sendBriefingViaGmailAPI(silent = false) {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
-
     await googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
       body: JSON.stringify({ raw: base64UrlEncoded })
     });
-
     const nowStr = formatDateDE(new Date());
     localStorage.setItem('semesterplan_last_auto_email_date', nowStr);
     renderEmailPreview();
-
     if (!silent) {
       showToast('✅ Wochen-Briefing erfolgreich an dein Gmail-Postfach gesendet!');
     }
@@ -789,13 +1088,14 @@ async function sendBriefingViaGmailAPI(silent = false) {
       triggerMailtoFallback();
     }
     return false;
+  } finally {
+    if (!silent) hideLoading();
   }
 }
 
 async function checkAndSendWeeklyAutoEmail() {
   if (!googleAccessToken) return;
   if (localStorage.getItem('semesterplan_auto_weekly_email') === 'false') return;
-
   const now = new Date();
   const currentWeekIdx = findWeekIndexByDate(now);
   const weekKey = currentWeekIdx !== -1
@@ -803,9 +1103,7 @@ async function checkAndSendWeeklyAutoEmail() {
     : `iso_${now.getFullYear()}_${now.getMonth()}_${Math.floor(now.getDate() / 7)}`;
   const targetKey = now.getDay() === 0 ? `${weekKey}_sun_preview` : `${weekKey}_weekly`;
   const lastSentKey = localStorage.getItem('semesterplan_last_auto_email_week_key');
-
   if (lastSentKey === targetKey) return;
-
   const sentOk = await sendBriefingViaGmailAPI(true);
   if (sentOk) {
     localStorage.setItem('semesterplan_last_auto_email_week_key', targetKey);
