@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
-  <title>🎓 Semesterplan App – WiSe 26/27</title>
+  <title>Semesterplan App – WiSe 26/27</title>
   <link rel="stylesheet" href="styles.css">
   <!-- Offizielle Google Identity Services Bibliothek für OAuth2 -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -13,7 +13,6 @@
 <body>
   <!-- IPHONE / MOBILE WRAPPER -->
   <div id="iphoneDeviceWrapper" class="iphone-device-wrapper">
-
     <!-- iOS Dynamic Island & Statusbar (Sichtbar in Desktop-iPhone-Vorschau) -->
     <div class="ios-statusbar">
       <span class="ios-time" id="iosClock">09:41</span>
@@ -37,7 +36,6 @@
         </div>
         <button class="side-drawer-close" onclick="closeSideDrawer()" title="Menü schließen">&times;</button>
       </div>
-
       <div class="side-drawer-body">
         <div class="drawer-section-title">Ansichten</div>
         <button class="drawer-item active" id="drawerTabTable" onclick="switchTab('table'); closeSideDrawer();">
@@ -73,7 +71,7 @@
           <span>⚙️</span> <span>Google-Kopplung &amp; Backup</span>
         </button>
 
-        <div class="drawer-section-title">Farbdesign (Ästhetische Farblehre)</div>
+        <div class="drawer-section-title">Farbdesign (Helle &amp; Dunkle Schemata)</div>
         <div class="drawer-theme-list" id="drawerThemeList"></div>
 
         <div class="drawer-section-title">Google Direktlinks</div>
@@ -101,9 +99,8 @@
             <div class="brand-subtitle">Synchron mit Google Tasks (Montags-Modus), Kalender, Gmail &amp; Modul-Dokumentenspeicher</div>
           </div>
         </div>
-
         <div class="action-bar">
-          <!-- FARBDESIGN-AUSWAHL MIT VORSCHAU -->
+          <!-- FARBDESIGN-AUSWAHL MIT VORSCHAU (INKL. DARK THEMES) -->
           <div class="theme-dropdown-container" id="themeDropdownContainer">
             <button type="button" class="btn btn-header theme-trigger-btn" onclick="toggleThemeMenu(event)" title="Farbdesign mit Vorschau wählen">
               <span class="theme-preview-dots" id="currentThemeDots">
@@ -118,7 +115,7 @@
           </div>
 
           <button class="btn btn-header" onclick="openTaskModal()" title="Neue Aufgabe anlegen">➕ Neue Aufgabe</button>
-          <button class="btn btn-header" onclick="openUploadDocModal()" title="Vorlesungs- oder Übungsdokument hochladen">📁 + Dokument</button>
+          <button class="btn btn-header" onclick="openUploadDocModal()" title="Vorlesungs-, Übungs- oder Lösungsdokument hochladen">📁 + Dokument</button>
 
           <!-- VEREINTER GOOGLE SYNC & KOPPLUNG BUTTON -->
           <div class="google-btn-group">
@@ -179,7 +176,7 @@
       <!-- DASHBOARD PROGRESS CARDS -->
       <div class="dashboard-grid" id="dashboardCards"></div>
 
-      <!-- TOOLBAR & TABS -->
+      <!-- TOOLBAR & TABS (OHNE TIPP-BANNER) -->
       <div class="toolbar no-print">
         <div class="tabs">
           <button class="tab-btn active" id="tabBtnTable" onclick="switchTab('table')">📊 Semesterplan</button>
@@ -192,15 +189,11 @@
           <select id="statusFilter" class="select-box" onchange="renderAll()">
             <option value="all">Alle Aufgaben</option>
             <option value="open">⬜ Nur offene</option>
+            <option value="in_progress">⏳ Nur angefangene</option>
             <option value="done">✅ Nur erledigte</option>
           </select>
           <button class="btn btn-outline btn-sm" id="clearModuleFilterBtn" style="display:none;" onclick="setModuleFilter(null)">✖ Filter aufheben</button>
         </div>
-      </div>
-
-      <!-- DRAG & DROP HINWEIS -->
-      <div id="dragHintBanner" class="drag-hint-banner no-print">
-        <span>💡 <strong>Tipp:</strong> Du kannst Aufgaben am Griff <code>⠿</code> per <strong>Drag &amp; Drop</strong> innerhalb einer Woche umsortieren oder direkt in eine andere Woche / ein anderes Modul ziehen! Alle Aufgaben werden automatisch am <strong>Montag</strong> der jeweiligen Woche im Kalender &amp; in Google Tasks eingetragen.</span>
       </div>
 
       <!-- TAB 1: TABLE / RESPONSIVE CARDS -->
@@ -223,7 +216,7 @@
         <div class="focus-grid">
           <div class="panel">
             <h2>
-              <span id="focusWeekTitle">📅 Aufgaben dieser Woche</span>
+              <span id="focusWeekTitle">Aufgaben dieser Woche</span>
               <span id="focusWeekProgress" class="focus-progress-badge"></span>
             </h2>
             <div id="focusUpcomingContainer"></div>
@@ -235,13 +228,13 @@
         </div>
       </div>
 
-      <!-- TAB 3: MODUL-DOKUMENTENSPEICHER (VORLESUNGS- & ÜBUNGSSPEICHER) -->
+      <!-- TAB 3: MODUL-DOKUMENTENSPEICHER (INKL. KATEGORIE "LÖSUNGEN") -->
       <div id="viewDocs" class="hidden">
         <div class="panel">
           <div class="docs-header-bar">
             <div>
-              <h2>📁 Vorlesungs- &amp; Übungsspeicher (pro Modul)</h2>
-              <p class="modal-hint" style="margin-bottom:0;">Lade PDFs, Vorlesungsfolien, Übungsblätter, Zusammenfassungen oder Bilder direkt in das jeweilige Modul hoch. Gespeichert in deiner lokalen Datenbank (IndexedDB).</p>
+              <h2>📁 Vorlesungs-, Übungs- &amp; Lösungsspeicher (pro Modul)</h2>
+              <p class="modal-hint" style="margin-bottom:0;">Hochgeladene Dateien werden intelligent der passenden Semesterwoche zugeordnet und vor dem Speichern einzeln mit dir abgestimmt.</p>
             </div>
             <div class="docs-controls">
               <select id="docsModuleFilter" class="select-box" onchange="renderModuleDocsView()">
@@ -251,6 +244,7 @@
                 <option value="all">Alle Kategorien</option>
                 <option value="Vorlesung">📖 Vorlesung</option>
                 <option value="Übung">✍️ Übung</option>
+                <option value="Lösungen">✅ Lösungen</option>
                 <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
                 <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
                 <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
@@ -309,7 +303,7 @@
     </nav>
   </div>
 
-  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN (INKL. REIHENFOLGE-AUSWAHL) -->
+  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN (INKL. STATUS "ANGEFANGEN" & REIHENFOLGE) -->
   <div class="modal-backdrop" id="taskModal">
     <div class="modal">
       <div class="modal-header">
@@ -351,10 +345,14 @@
         <div class="form-group checkbox-group" style="margin-top: 14px;">
           <label class="checkbox-label">
             <input type="checkbox" id="taskSyncCalendarCheck" checked>
-            <span>Im Google Kalender am Montag der Woche (bzw. gewähltem Datum) anzeigen</span>
+            <span>Im Google Kalender am Montag der Woche (ohne Wochenzahl &amp; ohne Emojis) anzeigen</span>
           </label>
           <label class="checkbox-label">
-            <input type="checkbox" id="taskDoneCheck">
+            <input type="checkbox" id="taskInProgressCheck" onchange="if(this.checked) document.getElementById('taskDoneCheck').checked = false;">
+            <span>Aufgabe bereits angefangen / in Bearbeitung (⏳)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="taskDoneCheck" onchange="if(this.checked) document.getElementById('taskInProgressCheck').checked = false;">
             <span>Bereits erledigt (✅)</span>
           </label>
         </div>
@@ -367,7 +365,7 @@
     </div>
   </div>
 
-  <!-- MODAL 2: DOKUMENT HOCHLADEN (VORLESUNGS- & ÜBUNGSSPEICHER) -->
+  <!-- MODAL 2: DOKUMENT HOCHLADEN (MIT INTELLIGENTER WOCHEN-ERKENNUNG & RÜCKFRAGE) -->
   <div class="modal-backdrop" id="uploadDocModal">
     <div class="modal">
       <div class="modal-header">
@@ -377,14 +375,15 @@
       <div class="modal-body">
         <div class="form-grid">
           <div class="form-group">
-            <label for="docModuleSelect">Modul / Fach</label>
-            <select id="docModuleSelect" class="select-box full-width"></select>
+            <label for="docModuleSelect">Standard-Modul (wird pro Datei intelligent geprüft)</label>
+            <select id="docModuleSelect" class="select-box full-width" onchange="handleDocFilesSelected()"></select>
           </div>
           <div class="form-group">
-            <label for="docCategorySelect">Kategorie</label>
-            <select id="docCategorySelect" class="select-box full-width">
+            <label for="docCategorySelect">Standard-Kategorie (inkl. Lösungen)</label>
+            <select id="docCategorySelect" class="select-box full-width" onchange="handleDocFilesSelected()">
               <option value="Vorlesung">📖 Vorlesung</option>
               <option value="Übung">✍️ Übung</option>
+              <option value="Lösungen">✅ Lösungen</option>
               <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
               <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
               <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
@@ -393,22 +392,24 @@
         </div>
         <div class="form-grid" style="margin-top: 14px;">
           <div class="form-group">
-            <label for="docWeekSelect">Zugehörige Semesterwoche (optional)</label>
-            <select id="docWeekSelect" class="select-box full-width"></select>
+            <label for="docWeekSelect">Semesterwoche (leer = automatisch aus Dateiname erkennen)</label>
+            <select id="docWeekSelect" class="select-box full-width" onchange="handleDocFilesSelected()"></select>
           </div>
           <div class="form-group">
-            <label for="docCustomTitle">Eigener Titel / Notiz (optional)</label>
-            <input type="text" id="docCustomTitle" placeholder="z.B. Folien V3 – Wärmeleitung">
+            <label for="docCustomTitle">Eigener Titel / Notiz (optional bei Einzeldatei)</label>
+            <input type="text" id="docCustomTitle" placeholder="z.B. Musterlösung ÜB 3 – Komplexe Zahlen">
           </div>
         </div>
         <div class="form-group" style="margin-top: 14px;">
-          <label for="docFileInput">Datei(en) auswählen (PDF, Word, Bilder, Python/Java/ZIP – Mehrfachauswahl möglich)</label>
-          <input type="file" id="docFileInput" multiple class="file-input-box">
+          <label for="docFileInput">Datei(en) auswählen (PDF, Word, Bilder, Code/ZIP – Mehrfachauswahl möglich)</label>
+          <input type="file" id="docFileInput" multiple class="file-input-box" onchange="handleDocFilesSelected()">
+          <!-- Dynamische Vorschau-Karten der intelligenten Einsortierung pro Datei -->
+          <div id="docSmartPreviewList" class="smart-sort-preview-list"></div>
         </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
-        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Im Modul speichern</button>
+        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Prüfen &amp; im Modul speichern</button>
       </div>
     </div>
   </div>
@@ -471,7 +472,7 @@
           <label for="clientIdInput">Hinterlegte Google OAuth 2.0 Client-ID (Automatisch aktiv)</label>
           <input type="text" id="clientIdInput" value="420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com">
           <small class="field-note">
-            Alle Aufgaben und Wochen-Oberaufgaben werden beim Sync automatisch einheitlich benannt (<code>📅 [Modul] Woche X</code>) und auf den <strong>Montag der jeweiligen Woche</strong> datiert.
+            Alle Aufgaben werden im Google Kalender &amp; in Google Tasks platzsparend <strong>ohne Wochenzahl und ohne Emojis</strong> (Format: <code>Modul: Aufgabe</code>) am <strong>Montag der jeweiligen Woche</strong> eingetragen.
           </small>
         </div>
         <div class="form-group" style="margin-bottom: 16px;">
@@ -482,7 +483,7 @@
         </div>
         <div class="sync-action-box">
           <button class="btn btn-primary" onclick="saveGoogleConfigAndConnect()">🔗 Mit Google Konto verbinden / Erneuern</button>
-          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich &amp; Namens-Reparatur ausführen</button>
+          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich &amp; Titel-Bereinigung ausführen</button>
         </div>
         <hr class="modal-divider">
         <h4 style="margin-bottom: 8px; color: var(--primary-dark);">💾 Lokales Backup (JSON Export / Import)</h4>

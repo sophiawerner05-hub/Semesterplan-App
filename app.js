@@ -1,7 +1,11 @@
 /* =========================================================
    HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
-   (Inkl. Drag & Drop, Reihenfolgen-Wahl, Seiten-Menüleiste,
-    Montags-Kalenderlogik, IndexedDB-Modulspeicher & neuen Themes)
+   - Status "Angefangen" (inProgress) für Aufgaben
+   - Intelligente Wochen- & Kategorie-Einsortierung beim Datei-Upload
+     inkl. Rückfrage/Bestätigung für jedes einzelne Dokument
+   - Neue Dokumenten-Kategorie "Lösungen"
+   - 5 ästhetische dunkle Farbschemata (Dark Themes)
+   - Ohne Tipp-Banner in der Web-Übersicht
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -9,52 +13,70 @@ const DOCS_DB_NAME = 'semesterplan_files_db';
 const DOCS_STORE_NAME = 'module_documents';
 
 const THEMES = {
-  rose:       { label: 'Original Rosa',           colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4' },
-  berry:      { label: 'Berry Velvet',            colors: ['#DB2777', '#831843', '#FDF2F8'], light: '#FCE7F3', border: '#FBCFE8' },
-  mocha:      { label: 'Café Mocha (Cool Taupe)', colors: ['#6E5D56', '#423532', '#F7F5F4'], light: '#EFECEB', border: '#DDD6D4' },
-  sage:       { label: 'Nordic Sage (Analog)',    colors: ['#5E8C76', '#2E5242', '#F4F8F6'], light: '#EAF2EE', border: '#CFE0D8' },
-  ocean:      { label: 'Aegean Ocean (Kühl)',     colors: ['#3A6EA5', '#1E3A5F', '#F5F8FC'], light: '#EBF2FA', border: '#D0E0F2' },
-  lavender:   { label: 'Provence Lavender',       colors: ['#7E6BC4', '#46357D', '#F8F7FC'], light: '#F1EFFA', border: '#DFD9F2' },
-  terracotta: { label: 'Tuscan Terracotta',       colors: ['#C26D53', '#853F2A', '#FBF7F5'], light: '#F9EFEA', border: '#EEDAD2' },
-  nordic:     { label: 'Nordic Fjord',            colors: ['#3B7A8C', '#1F4854', '#F4F8F9'], light: '#E9F2F5', border: '#CCE0E6' },
-  pearl:      { label: 'Rose Quartz & Pearl',     colors: ['#B57C86', '#6B444C', '#FBF8F9'], light: '#F6EEF0', border: '#E8D8DC' },
-  dark:       { label: 'Midnight Velvet (Dark)',  colors: ['#D97789', '#F3A6B4', '#141216'], light: '#2A2125', border: '#3D2F35' }
+  rose:       { label: 'Original Rosa',             colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4' },
+  berry:      { label: 'Berry Velvet',              colors: ['#DB2777', '#831843', '#FDF2F8'], light: '#FCE7F3', border: '#FBCFE8' },
+  mocha:      { label: 'Café Mocha (Cool Taupe)',   colors: ['#6E5D56', '#423532', '#F7F5F4'], light: '#EFECEB', border: '#DDD6D4' },
+  sage:       { label: 'Nordic Sage (Analog)',      colors: ['#5E8C76', '#2E5242', '#F4F8F6'], light: '#EAF2EE', border: '#CFE0D8' },
+  ocean:      { label: 'Aegean Ocean (Kühl)',       colors: ['#3A6EA5', '#1E3A5F', '#F5F8FC'], light: '#EBF2FA', border: '#D0E0F2' },
+  lavender:   { label: 'Provence Lavender',         colors: ['#7E6BC4', '#46357D', '#F8F7FC'], light: '#F1EFFA', border: '#DFD9F2' },
+  terracotta: { label: 'Tuscan Terracotta',         colors: ['#C26D53', '#853F2A', '#FBF7F5'], light: '#F9EFEA', border: '#EEDAD2' },
+  nordic:     { label: 'Nordic Fjord',              colors: ['#3B7A8C', '#1F4854', '#F4F8F9'], light: '#E9F2F5', border: '#CCE0E6' },
+  pearl:      { label: 'Rose Quartz & Pearl',       colors: ['#B57C86', '#6B444C', '#FBF8F9'], light: '#F6EEF0', border: '#E8D8DC' },
+  dark:       { label: 'Midnight Velvet (Dark)',    colors: ['#D97789', '#F3A6B4', '#141216'], light: '#2A2125', border: '#3D2F35' },
+  obsidian:   { label: 'Obsidian Emerald (Dark)',   colors: ['#52A788', '#8CE0C0', '#0E1513'], light: '#192722', border: '#283D35' },
+  cosmos:     { label: 'Nordic Night (Dark)',       colors: ['#5B9BD5', '#93C5FD', '#0B111E'], light: '#1A2636', border: '#2A3B52' },
+  amethyst:   { label: 'Nocturne Plum (Dark)',      colors: ['#9B82F3', '#C4B5FD', '#120F1B'], light: '#241E35', border: '#362D4F' },
+  espresso:   { label: 'Dark Roast (Dark)',         colors: ['#B68F78', '#E2C5B3', '#141110'], light: '#28211E', border: '#3C322D' }
 };
+
+const DOC_CATEGORIES = [
+  { value: 'Vorlesung', label: '📖 Vorlesung' },
+  { value: 'Übung', label: '✍️ Übung' },
+  { value: 'Lösungen', label: '✅ Lösungen' },
+  { value: 'Hörsaalübung', label: '🏛️ Hörsaalübung' },
+  { value: 'Testat / Praktikum', label: '🔬 Testat / Praktikum' },
+  { value: 'Klausur / Zusammenfassung', label: '🎓 Klausur / Zusammenfassung' }
+];
 
 let appState = null;
 let activeModuleFilter = null;
 let currentTab = 'table';
 let draggedTaskInfo = null;
 let cachedDocsList = [];
+let pendingUploadPlans = [];
 
 async function initApp() {
   // 1. Zuerst Status laden
   loadState();
 
-  // 2. Farbschemata im Header & Seitenmenü aufbauen
+  // 2. Tipp-Banner dauerhaft entfernen & neue UI-Optionen sicherstellen
+  document.getElementById('dragHintBanner')?.remove();
+  ensureExtendedUIElements();
+
+  // 3. Farbschemata im Header & Seitenmenü aufbauen
   buildThemeMenuUI();
   const savedTheme = localStorage.getItem(THEME_KEY) || 'rose';
   changeTheme(savedTheme, false);
 
-  // 3. Handy-Ansicht wiederherstellen (falls aktiv)
+  // 4. Handy-Ansicht wiederherstellen (falls aktiv)
   if (localStorage.getItem('semesterplan_iphone_view') === 'true') {
     document.body.classList.add('iphone-view-mode');
     updateIphoneBtnState();
   }
 
-  // 4. Uhrzeit aktualisieren
+  // 5. Uhrzeit aktualisieren
   updateIosClock();
   setInterval(updateIosClock, 30000);
 
-  // 5. Dropdowns initialisieren
+  // 6. Dropdowns initialisieren
   populateFocusWeekDropdown();
   populateDocsFilterDropdowns();
   selectCurrentCalendarWeek(false);
 
-  // 6. Gespeicherte Modul-Dokumente aus IndexedDB laden
+  // 7. Gespeicherte Modul-Dokumente aus IndexedDB laden
   await refreshDocsCache();
 
-  // 7. Oberfläche zeichnen
+  // 8. Oberfläche zeichnen
   renderAll();
 
   // Klick außerhalb schließt Farbdesign-Menü
@@ -65,6 +87,55 @@ async function initApp() {
       menu.classList.add('hidden');
     }
   });
+}
+
+function ensureExtendedUIElements() {
+  // Status-Filter um "Angefangen" ergänzen
+  const statusFilter = document.getElementById('statusFilter');
+  if (statusFilter && !statusFilter.querySelector('option[value="in_progress"]')) {
+    const opt = document.createElement('option');
+    opt.value = 'in_progress';
+    opt.textContent = '⏳ Nur angefangene';
+    const openOpt = statusFilter.querySelector('option[value="open"]');
+    if (openOpt && openOpt.nextSibling) {
+      statusFilter.insertBefore(opt, openOpt.nextSibling);
+    } else {
+      statusFilter.appendChild(opt);
+    }
+  }
+
+  // Im Aufgaben-Modal Checkbox "Angefangen (⏳)" ergänzen, falls noch nicht im HTML
+  const doneCheck = document.getElementById('taskDoneCheck');
+  if (doneCheck && !document.getElementById('taskInProgressCheck')) {
+    const group = doneCheck.closest('.checkbox-group');
+    if (group) {
+      const label = document.createElement('label');
+      label.className = 'checkbox-label';
+      label.innerHTML = `
+        <input type="checkbox" id="taskInProgressCheck" onchange="if(this.checked) document.getElementById('taskDoneCheck').checked = false;">
+        <span>Aufgabe bereits angefangen / in Bearbeitung (⏳)</span>
+      `;
+      group.insertBefore(label, doneCheck.closest('label'));
+      doneCheck.addEventListener('change', function() {
+        if (this.checked) {
+          const inProg = document.getElementById('taskInProgressCheck');
+          if (inProg) inProg.checked = false;
+        }
+      });
+    }
+  }
+
+  // Im Upload-Modal den Vorschau-Container für intelligente Wochen-Einsortierung anbinden
+  const fileInput = document.getElementById('docFileInput');
+  if (fileInput) {
+    fileInput.onchange = handleDocFilesSelected;
+    if (!document.getElementById('docSmartPreviewList')) {
+      const previewContainer = document.createElement('div');
+      previewContainer.id = 'docSmartPreviewList';
+      previewContainer.className = 'smart-sort-preview-list';
+      fileInput.parentElement.appendChild(previewContainer);
+    }
+  }
 }
 
 function updateIosClock() {
@@ -140,10 +211,8 @@ function buildThemeMenuUI() {
       <span class="theme-option-label">${escapeHtml(t.label)}</span>
     </button>
   `).join('');
-
   const menu = document.getElementById('themeMenu');
   if (menu) menu.innerHTML = html;
-
   const drawerList = document.getElementById('drawerThemeList');
   if (drawerList) drawerList.innerHTML = html;
 }
@@ -174,7 +243,6 @@ function changeTheme(themeName, showNotification = true) {
   document.querySelectorAll('.theme-option-item').forEach(btn => {
     btn.classList.toggle('active', btn.getAttribute('data-theme-key') === themeKey);
   });
-
   document.getElementById('themeMenu')?.classList.add('hidden');
   renderEmailPreview();
 
@@ -187,7 +255,7 @@ function toggleIphoneView() {
   const isIphone = document.body.classList.toggle('iphone-view-mode');
   localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
   updateIphoneBtnState();
-  showToast(isIphone ? '📱 Handy-Ansicht mit Seitenmenü aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
+  showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
 }
 
 function updateIphoneBtnState() {
@@ -203,7 +271,6 @@ function switchTab(tabName) {
   document.getElementById('viewDocs')?.classList.toggle('hidden', tabName !== 'docs');
   document.getElementById('viewEmail')?.classList.toggle('hidden', tabName !== 'email');
   document.getElementById('tableFilters')?.classList.toggle('hidden', tabName !== 'table');
-  document.getElementById('dragHintBanner')?.classList.toggle('hidden', tabName !== 'table');
 
   ['table', 'focus', 'docs', 'email'].forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
@@ -211,7 +278,6 @@ function switchTab(tabName) {
     document.getElementById(`iosTab${cap}`)?.classList.toggle('active', tabName === t);
     document.getElementById(`drawerTab${cap}`)?.classList.toggle('active', tabName === t);
   });
-
   renderAll();
 }
 
@@ -295,22 +361,26 @@ function findWeekIndexByDate(dateObj) {
 }
 
 /* =========================================================
-   STATISTIK & FORTSCHRITTSBERECHNUNG
+   STATISTIK & FORTSCHRITTSBERECHNUNG (INKL. "ANGEFANGEN")
    ========================================================= */
 function calculateStats() {
   const moduleStats = {};
   let overallTotal = 0;
   let overallCompleted = 0;
+  let overallInProgress = 0;
+
   for (const mod of appState.modules) {
     moduleStats[mod.shortName] = {
       shortName: mod.shortName,
       fullName: mod.fullName,
       total: 0,
       completed: 0,
+      inProgress: 0,
       pct: 0,
       docCount: cachedDocsList.filter(d => d.module === mod.shortName).length
     };
   }
+
   for (const week of appState.weeks) {
     for (const mod of appState.modules) {
       const items = week.cells[mod.shortName] || [];
@@ -320,22 +390,28 @@ function calculateStats() {
         if (item.done) {
           moduleStats[mod.shortName].completed++;
           overallCompleted++;
+        } else if (item.inProgress) {
+          moduleStats[mod.shortName].inProgress++;
+          overallInProgress++;
         }
       }
     }
   }
+
   for (const mod of appState.modules) {
     const s = moduleStats[mod.shortName];
     s.pct = s.total > 0 ? Math.round((s.completed / s.total) * 100) : 0;
   }
+
   const overallPct = overallTotal > 0 ? Math.round((overallCompleted / overallTotal) * 100) : 0;
-  return { moduleStats, overallTotal, overallCompleted, overallPct };
+  return { moduleStats, overallTotal, overallCompleted, overallInProgress, overallPct };
 }
 
 /* =========================================================
    RENDERING: DASHBOARD, TABELLE, FOKUS, DOKUMENTE & E-MAIL
    ========================================================= */
 function renderAll() {
+  if (!appState) return;
   const stats = calculateStats();
   renderDashboard(stats);
   renderTable(stats);
@@ -347,20 +423,23 @@ function renderAll() {
 function renderDashboard(stats) {
   const statusEl = document.getElementById('overallStatusText');
   if (statusEl) {
-    statusEl.textContent = `Gesamtfortschritt: ${stats.overallPct} % (${stats.overallCompleted}/${stats.overallTotal} erledigt)`;
+    const inProgInfo = stats.overallInProgress > 0 ? `, ${stats.overallInProgress} angefangen` : '';
+    statusEl.textContent = `Gesamtfortschritt: ${stats.overallPct} % (${stats.overallCompleted}/${stats.overallTotal} erledigt${inProgInfo})`;
   }
   const container = document.getElementById('dashboardCards');
   if (!container) return;
+
   container.innerHTML = appState.modules.map(mod => {
     const s = stats.moduleStats[mod.shortName];
     const isActive = activeModuleFilter === mod.shortName ? 'active-filter' : '';
+    const inProgSub = s.inProgress > 0 ? ` • ⏳ ${s.inProgress}` : '';
     return `
       <div class="stat-card ${isActive}" onclick="setModuleFilter('${escapeAttr(mod.shortName)}')" title="Klicken, um nach ${escapeAttr(mod.fullName)} zu filtern">
         <div class="stat-card-header">
           <span class="stat-title">${escapeHtml(mod.shortName)}</span>
           <span class="stat-pct">${s.pct}%</span>
         </div>
-        <div class="stat-sub">${escapeHtml(mod.fullName)} (${s.completed}/${s.total})</div>
+        <div class="stat-sub">${escapeHtml(mod.fullName)} (${s.completed}/${s.total}${inProgSub})</div>
         <div class="progress-track">
           <div class="progress-fill" style="width: ${s.pct}%;"></div>
         </div>
@@ -393,8 +472,8 @@ function renderTable(stats) {
   const searchVal = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
   const statusFilter = document.getElementById('statusFilter')?.value || 'all';
   const currentWeekIdx = findWeekIndexByDate(new Date());
-
   let rowsHtml = '';
+
   appState.weeks.forEach((week, wIdx) => {
     const isCurrentWeek = (wIdx === currentWeekIdx);
     const rowClass = `${wIdx % 2 === 0 ? 'even-row' : 'odd-row'} ${isCurrentWeek ? 'current-week-row' : ''}`;
@@ -408,7 +487,8 @@ function renderTable(stats) {
       const filteredItems = allItems
         .map((item, idx) => ({ item, idx }))
         .filter(({ item }) => {
-          if (statusFilter === 'open' && item.done) return false;
+          if (statusFilter === 'open' && (item.done || item.inProgress)) return false;
+          if (statusFilter === 'in_progress' && (!item.inProgress || item.done)) return false;
           if (statusFilter === 'done' && !item.done) return false;
           if (searchVal && !item.text.toLowerCase().includes(searchVal)) return false;
           return true;
@@ -417,7 +497,6 @@ function renderTable(stats) {
       if (filteredItems.length > 0) rowHasMatch = true;
       const allDone = allItems.length > 0 && allItems.every(i => i.done);
       const cellClass = allItems.length === 0 ? 'empty-cell' : (allDone ? 'completed-cell' : '');
-
       const dropAttrs = `ondragover="handleCellDragOver(event)" ondragleave="handleCellDragLeave(event)" ondrop="handleCellDrop(event, ${wIdx}, '${escapeAttr(mod.shortName)}')"`;
 
       if (filteredItems.length === 0) {
@@ -431,11 +510,13 @@ function renderTable(stats) {
         const listHtml = filteredItems.map(({ item, idx }) => {
           const isTestat = /testat\s*\d+/i.test(item.text);
           const badgeHtml = isTestat ? `<span class="testat-tag">TESTAT</span>` : '';
+          const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
           const effectiveDate = item.dueDate || mondayIso;
-          const dateHtml = `<span class="date-tag" title="Kalenderdatum (Montag der Woche)">📅 Mo, ${formatIsoDateDE(effectiveDate)}</span>`;
+          const dateHtml = `<span class="date-tag" title="Kalenderdatum (Montag der Woche)">Mo, ${formatIsoDateDE(effectiveDate)}</span>`;
+          const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
 
           return `
-            <li class="task-item ${item.done ? 'done' : ''}"
+            <li class="task-item ${statusClass}"
                 draggable="true"
                 ondragstart="handleTaskDragStart(event, ${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})"
                 ondragend="handleTaskDragEnd(event)"
@@ -445,9 +526,10 @@ function renderTable(stats) {
               <span class="drag-handle" title="Ziehen zum Verschieben (Drag & Drop)">⠿</span>
               <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
               <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-                ${escapeHtml(item.text)} ${badgeHtml} ${dateHtml}
+                ${escapeHtml(item.text)} ${inProgBadge} ${badgeHtml} ${dateHtml}
               </span>
               <div class="task-actions">
+                <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" title="Als angefangen markieren / aufheben" onclick="toggleTaskInProgress(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
                 <button class="task-action-btn" title="Nach oben" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
                 <button class="task-action-btn" title="Nach unten" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
                 <button class="task-action-btn" title="Bearbeiten" onclick="openEditTaskModal(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">✏️</button>
@@ -473,7 +555,7 @@ function renderTable(stats) {
           <td class="week-col">
             <div>
               <span>${escapeHtml(week.weekLabel)}</span>
-              <span class="week-mon-hint">🗓️ Mo: ${mondayDE}</span>
+              <span class="week-mon-hint">Mo: ${mondayDE}</span>
             </div>
             ${currentBadge}
           </td>
@@ -564,7 +646,6 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   if (!draggedTaskInfo) return;
   const { weekIdx: srcWeekIdx, shortName: srcMod, itemIdx: srcIdx } = draggedTaskInfo;
   draggedTaskInfo = null;
-
   const srcList = appState.weeks[srcWeekIdx]?.cells[srcMod];
   if (!srcList || !srcList[srcIdx]) return;
 
@@ -573,18 +654,15 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
     appState.weeks[targetWeekIdx].cells[targetMod] = [];
   }
   const destList = appState.weeks[targetWeekIdx].cells[targetMod];
-
   let insertAt = targetIndex;
   if (srcWeekIdx === targetWeekIdx && srcMod === targetMod && srcIdx < targetIndex) {
     insertAt = Math.max(0, targetIndex - 1);
   }
   destList.splice(insertAt, 0, movedItem);
 
-  // Wenn die Woche gewechselt wurde, altes Datum zurücksetzen, damit der neue Montag gilt
   if (srcWeekIdx !== targetWeekIdx) {
     movedItem.dueDate = getWeekMondayDateString(targetWeekIdx);
   }
-
   saveState();
   renderAll();
 
@@ -660,7 +738,7 @@ function renderFocusView() {
   const mondayIso = getWeekMondayDateString(selIdx);
 
   if (titleEl) {
-    titleEl.textContent = `📅 ${week.weekLabel.replace(/\n/g, ' ')} (Kalender-Montag: ${formatIsoDateDE(mondayIso)})`;
+    titleEl.textContent = `${week.weekLabel.replace(/\n/g, ' ')} (Montag: ${formatIsoDateDE(mondayIso)})`;
   }
 
   let weekTotal = 0;
@@ -674,14 +752,18 @@ function renderFocusView() {
       weekTotal++;
       if (item.done) weekDone++;
       const dateStr = formatIsoDateDE(item.dueDate || mondayIso);
+      const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
+      const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
+
       return `
-        <li class="task-item ${item.done ? 'done' : ''}">
+        <li class="task-item ${statusClass}">
           <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
           <span class="task-text" onclick="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-            <strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(item.text)}
-            <span class="date-tag">📅 Mo, ${dateStr}</span>
+            <strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(item.text)} ${inProgBadge}
+            <span class="date-tag">Mo, ${dateStr}</span>
           </span>
           <div class="task-actions">
+            <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" onclick="toggleTaskInProgress(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
             <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
             <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
             <button class="task-action-btn" onclick="openEditTaskModal(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">✏️</button>
@@ -690,6 +772,7 @@ function renderFocusView() {
         </li>
       `;
     }).join('');
+
     upcomingHtml += `
       <div class="module-focus-card">
         <h4>${escapeHtml(mod.shortName)} – ${escapeHtml(mod.fullName)}</h4>
@@ -715,9 +798,11 @@ function renderFocusView() {
         .filter(({ item }) => !item.done);
       if (openItems.length > 0) {
         const listHtml = openItems.map(({ item, idx }) => `
-          <li class="task-item">
+          <li class="task-item ${item.inProgress ? 'in-progress' : ''}">
             <input type="checkbox" class="task-checkbox" onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-            <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">${escapeHtml(item.text)}</span>
+            <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+              ${escapeHtml(item.text)} ${item.inProgress ? '<span class="inprogress-tag">⏳ Angefangen</span>' : ''}
+            </span>
           </li>
         `).join('');
         overdueHtml += `
@@ -735,18 +820,35 @@ function renderFocusView() {
 }
 
 /* =========================================================
-   AUFGABEN ABHAKEN, HINZUFÜGEN (MIT REIHENFOLGE), BEARBEITEN
+   AUFGABEN ABHAKEN, ALS ANGEFANGEN MARKIEREN, HINZUFÜGEN & BEARBEITEN
    ========================================================= */
 function toggleTaskDone(weekIdx, shortName, itemIdx) {
   const items = appState.weeks[weekIdx]?.cells[shortName];
   if (!items || !items[itemIdx]) return;
   const item = items[itemIdx];
   item.done = !item.done;
+  if (item.done) item.inProgress = false;
   saveState();
   renderAll();
   if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
     pushSingleTaskToggleToGoogle(weekIdx, shortName, item);
   }
+}
+
+function toggleTaskInProgress(weekIdx, shortName, itemIdx) {
+  const items = appState.weeks[weekIdx]?.cells[shortName];
+  if (!items || !items[itemIdx]) return;
+  const item = items[itemIdx];
+  item.inProgress = !item.inProgress;
+  if (item.inProgress && item.done) {
+    item.done = false;
+    if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
+      pushSingleTaskToggleToGoogle(weekIdx, shortName, item);
+    }
+  }
+  saveState();
+  renderAll();
+  showToast(item.inProgress ? '⏳ Aufgabe als „Angefangen“ markiert!' : '⬜ Status „Angefangen“ aufgehoben.');
 }
 
 function populateModalDropdowns() {
@@ -772,13 +874,11 @@ function updateTaskPositionOptions(selectedPos = null) {
   if (!posSelect || !modVal || isNaN(weekIdx)) return;
 
   const existingItems = appState.weeks[weekIdx]?.cells[modVal] || [];
-  const options = [];
-  options.push(`<option value="0">1. An erster Stelle (ganz oben)</option>`);
+  const options = [`<option value="0">1. An erster Stelle (ganz oben)</option>`];
   existingItems.forEach((it, idx) => {
     const shortTxt = it.text.length > 38 ? it.text.slice(0, 38) + '…' : it.text;
     options.push(`<option value="${idx + 1}">${idx + 2}. Nach „${escapeHtml(shortTxt)}“</option>`);
   });
-
   posSelect.innerHTML = options.join('');
   if (selectedPos !== null && selectedPos >= 0 && selectedPos <= existingItems.length) {
     posSelect.value = String(selectedPos);
@@ -788,6 +888,7 @@ function updateTaskPositionOptions(selectedPos = null) {
 }
 
 function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
+  ensureExtendedUIElements();
   populateModalDropdowns();
   document.getElementById('taskModalTitle').textContent = '➕ Neue Aufgabe hinzufügen';
   document.getElementById('editTaskWeekIdx').value = '';
@@ -803,11 +904,12 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
   document.getElementById('taskWeekSelect').value = String(targetWeek);
   document.getElementById('taskModuleSelect').value = preselectedModule || appState.modules[0].shortName;
   updateTaskPositionOptions();
-
   document.getElementById('taskTextInput').value = '';
   document.getElementById('taskDueDateInput').value = getWeekMondayDateString(targetWeek);
   document.getElementById('taskSyncCalendarCheck').checked = true;
   document.getElementById('taskDoneCheck').checked = false;
+  const inProgEl = document.getElementById('taskInProgressCheck');
+  if (inProgEl) inProgEl.checked = false;
 
   openModal('taskModal');
   setTimeout(() => document.getElementById('taskTextInput')?.focus(), 80);
@@ -816,8 +918,9 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
 function openEditTaskModal(weekIdx, shortName, itemIdx) {
   const item = appState.weeks[weekIdx]?.cells[shortName]?.[itemIdx];
   if (!item) return;
+  ensureExtendedUIElements();
   populateModalDropdowns();
-  document.getElementById('taskModalTitle').textContent = '✏️ Aufgabe & Position bearbeiten';
+  document.getElementById('taskModalTitle').textContent = '✏️ Aufgabe & Status bearbeiten';
   document.getElementById('editTaskWeekIdx').value = String(weekIdx);
   document.getElementById('editTaskOrigModule').value = shortName;
   document.getElementById('editTaskItemIdx').value = String(itemIdx);
@@ -826,11 +929,12 @@ function openEditTaskModal(weekIdx, shortName, itemIdx) {
   document.getElementById('taskWeekSelect').value = String(weekIdx);
   document.getElementById('taskModuleSelect').value = shortName;
   updateTaskPositionOptions(itemIdx);
-
   document.getElementById('taskTextInput').value = item.text;
   document.getElementById('taskDueDateInput').value = item.dueDate || getWeekMondayDateString(weekIdx);
   document.getElementById('taskSyncCalendarCheck').checked = item.syncCalendar !== false;
   document.getElementById('taskDoneCheck').checked = !!item.done;
+  const inProgEl = document.getElementById('taskInProgressCheck');
+  if (inProgEl) inProgEl.checked = !!item.inProgress && !item.done;
 
   openModal('taskModal');
   setTimeout(() => document.getElementById('taskTextInput')?.focus(), 80);
@@ -838,7 +942,7 @@ function openEditTaskModal(weekIdx, shortName, itemIdx) {
 
 function saveTaskFromModal() {
   const textInput = document.getElementById('taskTextInput');
-  const cleanText = (textInput.value || '').trim().replace(/^✅\s*/, '');
+  const cleanText = (textInput.value || '').trim().replace(/^[✅⏳]\s*/, '');
   if (!cleanText) {
     showToast('⚠️ Bitte eine Aufgabenbeschreibung eingeben.');
     textInput.focus();
@@ -852,6 +956,7 @@ function saveTaskFromModal() {
   const dueDate = document.getElementById('taskDueDateInput').value || mondayDefault;
   const syncCalendar = document.getElementById('taskSyncCalendarCheck').checked;
   const done = document.getElementById('taskDoneCheck').checked;
+  const inProgress = !done && !!document.getElementById('taskInProgressCheck')?.checked;
 
   const origWeekStr = document.getElementById('editTaskWeekIdx').value;
   const origMod = document.getElementById('editTaskOrigModule').value;
@@ -872,6 +977,7 @@ function saveTaskFromModal() {
         : dueDate;
       existingItem.syncCalendar = syncCalendar;
       existingItem.done = done;
+      existingItem.inProgress = inProgress;
 
       appState.weeks[origWeekIdx].cells[origMod].splice(origItemIdx, 1);
       const destList = appState.weeks[targetWeekIdx].cells[targetMod];
@@ -881,7 +987,7 @@ function saveTaskFromModal() {
       saveState();
       renderAll();
       closeModal('taskModal');
-      showToast('💾 Aufgabe & Reihenfolge aktualisiert!');
+      showToast('💾 Aufgabe aktualisiert!');
       if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
         pushSingleTaskMoveOrEditToGoogle(targetWeekIdx, targetMod, existingItem);
       }
@@ -892,10 +998,10 @@ function saveTaskFromModal() {
   const newItem = {
     text: cleanText,
     done: done,
+    inProgress: inProgress,
     dueDate: dueDate,
     syncCalendar: syncCalendar
   };
-
   const destList = appState.weeks[targetWeekIdx].cells[targetMod];
   const boundedPos = Math.min(Math.max(0, targetPos), destList.length);
   destList.splice(boundedPos, 0, newItem);
@@ -903,8 +1009,7 @@ function saveTaskFromModal() {
   saveState();
   renderAll();
   closeModal('taskModal');
-  showToast(`✅ Aufgabe an Position ${boundedPos + 1} in ${targetMod} eingefügt!`);
-
+  showToast(`✅ Aufgabe in ${targetMod} eingefügt!`);
   if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
     pushSingleTaskCreateToGoogle(targetWeekIdx, targetMod, newItem);
   }
@@ -945,7 +1050,7 @@ function syncAndClean() {
       const cleaned = [];
       for (const item of items) {
         const cleanLine = item.text
-          .replace(/^✅\s*/, '')
+          .replace(/^[✅⏳📅]\s*/, '')
           .replace(new RegExp(`^\\[?${mod.shortName}\\]?\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
           .trim();
         const lowerClean = cleanLine.toLowerCase();
@@ -969,7 +1074,7 @@ function syncAndClean() {
 }
 
 /* =========================================================
-   MODUL-DOKUMENTENSPEICHER (INDEXEDDB FÜR PDF, FOLIEN, ÜBUNGEN)
+   MODUL-DOKUMENTENSPEICHER & INTELLIGENTE WOCHEN-EINSORTIERUNG
    ========================================================= */
 function openDocsDatabase() {
   return new Promise((resolve, reject) => {
@@ -1008,27 +1113,234 @@ function populateDocsFilterDropdowns() {
     filterMod.innerHTML = `<option value="all">Alle Module anzeigen</option>` +
       appState.modules.map(m => `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`).join('');
   }
+  const filterCat = document.getElementById('docsCategoryFilter');
+  if (filterCat) {
+    filterCat.innerHTML = `<option value="all">Alle Kategorien</option>` +
+      DOC_CATEGORIES.map(c => `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`).join('');
+  }
 }
 
 function openUploadDocModal(preselectedMod = null) {
+  ensureExtendedUIElements();
   const modSel = document.getElementById('docModuleSelect');
+  const catSel = document.getElementById('docCategorySelect');
   const weekSel = document.getElementById('docWeekSelect');
+
   if (modSel) {
     modSel.innerHTML = appState.modules.map(m =>
       `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} (${escapeHtml(m.fullName)})</option>`
     ).join('');
     if (preselectedMod) modSel.value = preselectedMod;
   }
+  if (catSel) {
+    catSel.innerHTML = DOC_CATEGORIES.map(c =>
+      `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`
+    ).join('');
+  }
   if (weekSel) {
-    weekSel.innerHTML = `<option value="">Allgemein / Ohne feste Woche</option>` +
+    weekSel.innerHTML = `<option value="">Automatisch erkennen / Allgemein</option>` +
       appState.weeks.map(w => {
         const oneLine = w.weekLabel.replace(/\n/g, ' ');
         return `<option value="${escapeAttr(oneLine)}">${escapeHtml(oneLine)}</option>`;
       }).join('');
   }
+
   document.getElementById('docCustomTitle').value = '';
   document.getElementById('docFileInput').value = '';
+  pendingUploadPlans = [];
+  const previewEl = document.getElementById('docSmartPreviewList');
+  if (previewEl) previewEl.innerHTML = '';
   openModal('uploadDocModal');
+}
+
+/* Intelligente Analyse des Dateinamens für Modul, Kategorie & Semesterwoche */
+function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, fallbackWeekLabel) {
+  const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[_\-]+/g, ' ');
+  const lower = cleanName.toLowerCase();
+
+  // 1. Modul erkennen
+  let detectedModule = fallbackModule || appState.modules[0]?.shortName || 'ModSim';
+  const modPatterns = [
+    { mod: 'ModSim', regex: /\b(modsim|modellierung|simulation|fem|numpy|python|awp|rwp|2-\d{2})\b/i },
+    { mod: 'Informatik', regex: /\b(info|informatik|programmierung|le\s*\d+|ringtausch|oop|polymorphismus|verkettete)\b/i },
+    { mod: 'Elektro', regex: /\b(elektro|elektrotechnik|elektronik|kirchhoff|ohm|kondensator|spule|wechselstrom|diode|transistor|operationsverst)\b/i },
+    { mod: 'Mathe 2', regex: /\b(mathe|hm\s*2|komplexe|euler|gauß|gauss|matrizen|determinante|eigenwert|hesse|taylor|fubini)\b/i },
+    { mod: 'CAD', regex: /\b(cad|testat|toleranz|passung|oberfl|wellenlagerung|maschinenelemente|typ\s*[a-j])\b/i }
+  ];
+  for (const mp of modPatterns) {
+    if (mp.regex.test(cleanName)) {
+      detectedModule = mp.mod;
+      break;
+    }
+  }
+
+  // 2. Kategorie erkennen (inkl. "Lösungen")
+  let detectedCategory = fallbackCategory || 'Vorlesung';
+  if (/(lösung|loesung|musterlösung|musterloesung|solution|lös\b|loes\b)/i.test(cleanName)) {
+    detectedCategory = 'Lösungen';
+  } else if (/(hsü|hsu|hörsaal|hoersaal)/i.test(cleanName)) {
+    detectedCategory = 'Hörsaalübung';
+  } else if (/(üb|ueb|übung|uebung|blatt|aufgabe)/i.test(cleanName)) {
+    detectedCategory = 'Übung';
+  } else if (/(testat|praktikum|labor)/i.test(cleanName)) {
+    detectedCategory = 'Testat / Praktikum';
+  } else if (/(klausur|altklausur|zusammenfassung|formelsammlung|skript)/i.test(cleanName)) {
+    detectedCategory = 'Klausur / Zusammenfassung';
+  } else if (/(vorlesung|folien|\bv\s*\d+|\ble\s*\d+)/i.test(cleanName)) {
+    detectedCategory = 'Vorlesung';
+  }
+
+  // 3. Semesterwoche intelligent aus Aufgabenplan ermitteln
+  let detectedWeekLabel = fallbackWeekLabel || '';
+  let matchReason = 'Standard-Auswahl';
+
+  // Explizite Wochenangabe im Dateinamen (z.B. "Woche 4" oder "W4" oder "KW 5")
+  const directWeekMatch = cleanName.match(/\b(?:woche|week|w)\s*(\d{1,2})\b/i);
+  if (directWeekMatch) {
+    const wNum = parseInt(directWeekMatch[1], 10);
+    if (wNum >= 1 && wNum <= appState.weeks.length) {
+      detectedWeekLabel = appState.weeks[wNum - 1].weekLabel.replace(/\n/g, ' ');
+      matchReason = `Wochennummer „Woche ${wNum}“ im Dateinamen erkannt`;
+    }
+  }
+
+  // Suche nach Kürzeln wie V1, LE 4, ÜB 3, HSÜ 2, 2-05, Testat 2, Typ C
+  if (!detectedWeekLabel || matchReason === 'Standard-Auswahl') {
+    const tokenRegex = /\b(v\s*\d+|le\s*\d+|üb\s*\d+|ueb\s*\d+|ü\s*\d+|hsü\s*\d+|hsu\s*\d+|testat\s*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
+    const tokens = (cleanName.match(tokenRegex) || []).map(t =>
+      t.toLowerCase().replace(/ueb|^ü(?=\s*\d)/, 'üb').replace(/hsu/, 'hsü').replace(/\s+/g, '')
+    );
+
+    let bestScore = 0;
+    let bestWeek = null;
+    let bestToken = '';
+
+    for (const week of appState.weeks) {
+      const modItems = week.cells[detectedModule] || [];
+      for (const item of modItems) {
+        const itemNorm = item.text.toLowerCase().replace(/\s+/g, '');
+        let score = 0;
+        for (const tok of tokens) {
+          if (itemNorm.includes(tok)) {
+            score += 10;
+            bestToken = tok.toUpperCase();
+          }
+        }
+        // Stichwort-Abgleich mit Aufgabentext
+        const words = lower.split(/\s+/).filter(w => w.length >= 4 && !['vorlesung', 'übung', 'uebung', 'lösung', 'loesung'].includes(w));
+        for (const w of words) {
+          if (item.text.toLowerCase().includes(w)) {
+            score += 4;
+            if (!bestToken) bestToken = w;
+          }
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestWeek = week;
+        }
+      }
+    }
+
+    if (bestWeek && bestScore > 0) {
+      detectedWeekLabel = bestWeek.weekLabel.replace(/\n/g, ' ');
+      matchReason = `Automatisch zugeordnet über „${bestToken}“ in ${detectedModule}`;
+    } else if (!detectedWeekLabel) {
+      const nowIdx = findWeekIndexByDate(new Date());
+      if (nowIdx !== -1) {
+        detectedWeekLabel = appState.weeks[nowIdx].weekLabel.replace(/\n/g, ' ');
+        matchReason = 'Aktuelle Kalenderwoche (kein eindeutiges Kürzel im Dateinamen)';
+      }
+    }
+  }
+
+  return {
+    module: detectedModule,
+    category: detectedCategory,
+    weekLabel: detectedWeekLabel,
+    reason: matchReason
+  };
+}
+
+function handleDocFilesSelected() {
+  const fileInput = document.getElementById('docFileInput');
+  const previewContainer = document.getElementById('docSmartPreviewList');
+  if (!fileInput || !previewContainer) return;
+
+  const files = Array.from(fileInput.files || []);
+  if (files.length === 0) {
+    pendingUploadPlans = [];
+    previewContainer.innerHTML = '';
+    return;
+  }
+
+  const fallbackMod = document.getElementById('docModuleSelect')?.value || appState.modules[0]?.shortName;
+  const fallbackCat = document.getElementById('docCategorySelect')?.value || 'Vorlesung';
+  const fallbackWeek = document.getElementById('docWeekSelect')?.value || '';
+
+  pendingUploadPlans = files.map((file, idx) => {
+    const guess = analyzeFileForSmartSorting(file.name, fallbackMod, fallbackCat, fallbackWeek);
+    return {
+      index: idx,
+      file: file,
+      title: file.name,
+      module: guess.module,
+      category: guess.category,
+      weekLabel: guess.weekLabel,
+      reason: guess.reason
+    };
+  });
+
+  renderSmartUploadPreview();
+}
+
+function renderSmartUploadPreview() {
+  const previewContainer = document.getElementById('docSmartPreviewList');
+  if (!previewContainer) return;
+
+  const weekOptionsHtml = `<option value="">Allgemein / Ohne feste Woche</option>` +
+    appState.weeks.map(w => {
+      const oneLine = w.weekLabel.replace(/\n/g, ' ');
+      return `<option value="${escapeAttr(oneLine)}">${escapeHtml(oneLine)}</option>`;
+    }).join('');
+
+  previewContainer.innerHTML = pendingUploadPlans.map((plan, idx) => `
+    <div class="smart-sort-card">
+      <div class="smart-sort-card-header">
+        <strong>📄 ${escapeHtml(plan.file.name)}</strong>
+        <span class="smart-sort-reason">✨ ${escapeHtml(plan.reason)}</span>
+      </div>
+      <div class="smart-sort-grid">
+        <div>
+          <label style="font-size:0.74rem; font-weight:700;">Modul prüfen:</label>
+          <select class="select-box full-width" onchange="updatePendingUploadPlan(${idx}, 'module', this.value)">
+            ${appState.modules.map(m => `<option value="${escapeAttr(m.shortName)}" ${plan.module === m.shortName ? 'selected' : ''}>${escapeHtml(m.shortName)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:0.74rem; font-weight:700;">Kategorie prüfen:</label>
+          <select class="select-box full-width" onchange="updatePendingUploadPlan(${idx}, 'category', this.value)">
+            ${DOC_CATEGORIES.map(c => `<option value="${escapeAttr(c.value)}" ${plan.category === c.value ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:0.74rem; font-weight:700;">Semesterwoche prüfen:</label>
+          <select class="select-box full-width" id="smartWeekSelect_${idx}" onchange="updatePendingUploadPlan(${idx}, 'weekLabel', this.value)">
+            ${weekOptionsHtml}
+          </select>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  pendingUploadPlans.forEach((plan, idx) => {
+    const sel = document.getElementById(`smartWeekSelect_${idx}`);
+    if (sel) sel.value = plan.weekLabel || '';
+  });
+}
+
+function updatePendingUploadPlan(idx, field, value) {
+  if (!pendingUploadPlans[idx]) return;
+  pendingUploadPlans[idx][field] = value;
 }
 
 function readFileAsDataURL(file) {
@@ -1047,39 +1359,65 @@ async function handleSaveUploadedDocs() {
     showToast('⚠️ Bitte mindestens eine Datei auswählen.');
     return;
   }
-  const moduleName = document.getElementById('docModuleSelect').value;
-  const category = document.getElementById('docCategorySelect').value;
-  const weekName = document.getElementById('docWeekSelect').value;
-  const customTitle = document.getElementById('docCustomTitle').value.trim();
+
+  if (pendingUploadPlans.length !== files.length) {
+    handleDocFilesSelected();
+  }
+
+  const customTitle = (document.getElementById('docCustomTitle')?.value || '').trim();
 
   try {
     const db = await openDocsDatabase();
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    let savedCount = 0;
+
+    for (let i = 0; i < pendingUploadPlans.length; i++) {
+      const plan = pendingUploadPlans[i];
+      const file = plan.file;
+      const weekDisplay = plan.weekLabel ? plan.weekLabel : 'Allgemein (ohne feste Woche)';
+
+      // Explizite Bestätigungs-Abfrage für jedes einzelne Dokument vor dem Einsortieren
+      const isConfirmed = window.confirm(
+        `Dokument ${i + 1} von ${pendingUploadPlans.length}: „${file.name}“\n\n` +
+        `Automatische Einsortierung:\n` +
+        `• Modul: ${plan.module}\n` +
+        `• Kategorie: ${plan.category}\n` +
+        `• Woche: ${weekDisplay}\n` +
+        `(${plan.reason})\n\n` +
+        `Ist diese Einsortierung richtig? (Klicke auf „Abbrechen“, wenn du die Zuordnung im Fenster noch ändern möchtest.)`
+      );
+
+      if (!isConfirmed) {
+        showToast(`ℹ️ Bitte passe die Zuordnung für „${file.name}“ im Auswahlfeld an und speichere erneut.`);
+        return;
+      }
+
       const dataUrl = await readFileAsDataURL(file);
       const docRecord = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        module: moduleName,
-        category: category,
-        weekLabel: weekName,
-        title: customTitle && files.length === 1 ? customTitle : file.name,
+        module: plan.module,
+        category: plan.category,
+        weekLabel: plan.weekLabel,
+        title: customTitle && pendingUploadPlans.length === 1 ? customTitle : file.name,
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
         dataUrl: dataUrl,
         uploadedAt: Date.now()
       };
+
       await new Promise((resolve, reject) => {
         const tx = db.transaction(DOCS_STORE_NAME, 'readwrite');
         tx.objectStore(DOCS_STORE_NAME).put(docRecord);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
+      savedCount++;
     }
+
     await refreshDocsCache();
     closeModal('uploadDocModal');
     renderAll();
-    showToast(`📁 ${files.length} Dokument(e) in ${moduleName} gespeichert!`);
+    showToast(`📁 ${savedCount} Dokument(e) erfolgreich geprüft und gespeichert!`);
   } catch (e) {
     console.error('Fehler beim Speichern des Dokuments:', e);
     showToast('❌ Fehler beim Speichern der Datei.');
@@ -1138,10 +1476,8 @@ function formatFileSize(bytes) {
 function renderModuleDocsView() {
   const grid = document.getElementById('moduleDocsGrid');
   if (!grid) return;
-
   const modFilter = document.getElementById('docsModuleFilter')?.value || 'all';
   const catFilter = document.getElementById('docsCategoryFilter')?.value || 'all';
-
   const modulesToShow = modFilter === 'all'
     ? appState.modules
     : appState.modules.filter(m => m.shortName === modFilter);
@@ -1151,26 +1487,28 @@ function renderModuleDocsView() {
       d.module === mod.shortName &&
       (catFilter === 'all' || d.category === catFilter)
     );
-
     const listHtml = docsForMod.length === 0
       ? `<p style="font-size:0.8rem; color:var(--text-muted); padding:10px 0;">Noch keine Dokumente für ${escapeHtml(mod.shortName)} hinterlegt.</p>`
-      : docsForMod.map(doc => `
-          <div class="doc-item-card">
-            <div class="doc-item-info">
-              <div class="doc-item-title" title="${escapeAttr(doc.title)}">📄 ${escapeHtml(doc.title)}</div>
-              <div class="doc-item-meta">
-                <span class="doc-cat-badge">${escapeHtml(doc.category)}</span>
-                ${doc.weekLabel ? `<span>• ${escapeHtml(doc.weekLabel.split('(')[0].trim())}</span>` : ''}
-                <span>• ${formatFileSize(doc.sizeBytes)}</span>
+      : docsForMod.map(doc => {
+          const isSolution = doc.category === 'Lösungen';
+          return `
+            <div class="doc-item-card">
+              <div class="doc-item-info">
+                <div class="doc-item-title" title="${escapeAttr(doc.title)}">📄 ${escapeHtml(doc.title)}</div>
+                <div class="doc-item-meta">
+                  <span class="doc-cat-badge ${isSolution ? 'doc-cat-solution' : ''}">${escapeHtml(doc.category)}</span>
+                  ${doc.weekLabel ? `<span>• ${escapeHtml(doc.weekLabel.split('(')[0].trim())}</span>` : ''}
+                  <span>• ${formatFileSize(doc.sizeBytes)}</span>
+                </div>
+              </div>
+              <div class="doc-item-actions">
+                <button class="btn btn-outline btn-sm" onclick="previewModuleDoc('${escapeAttr(doc.id)}')" title="Vorschau">👁️</button>
+                <a class="btn btn-outline btn-sm" href="${doc.dataUrl}" download="${escapeAttr(doc.fileName || doc.title)}" title="Herunterladen">⬇️</a>
+                <button class="btn btn-danger-outline btn-sm" onclick="deleteModuleDoc('${escapeAttr(doc.id)}')" title="Löschen">🗑️</button>
               </div>
             </div>
-            <div class="doc-item-actions">
-              <button class="btn btn-outline btn-sm" onclick="previewModuleDoc('${escapeAttr(doc.id)}')" title="Vorschau">👁️</button>
-              <a class="btn btn-outline btn-sm" href="${doc.dataUrl}" download="${escapeAttr(doc.fileName || doc.title)}" title="Herunterladen">⬇️</a>
-              <button class="btn btn-danger-outline btn-sm" onclick="deleteModuleDoc('${escapeAttr(doc.id)}')" title="Löschen">🗑️</button>
-            </div>
-          </div>
-        `).join('');
+          `;
+        }).join('');
 
     return `
       <div class="module-doc-column">
@@ -1197,7 +1535,6 @@ function buildEmailHtmlObject() {
   const week = appState.weeks[selIdx] || appState.weeks[0];
   const upcomingWeekLabel = week.weekLabel.replace(/\n/g, ' ');
   const mondayStr = formatIsoDateDE(getWeekMondayDateString(selIdx));
-
   const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
   const themeObj = THEMES[currentThemeKey] || THEMES.rose;
   const primaryColor = themeObj.colors[0];
@@ -1211,14 +1548,17 @@ function buildEmailHtmlObject() {
   for (const mod of appState.modules) {
     const items = week.cells[mod.shortName] || [];
     if (items.length > 0) {
-      const itemsHtml = items.map(i => `<li>${i.done ? '✅ ' : '⬜ '}<strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(i.text)} (Kalender: Mo, ${formatIsoDateDE(i.dueDate || getWeekMondayDateString(selIdx))})</li>`).join('');
+      const itemsHtml = items.map(i => {
+        const icon = i.done ? '✅ ' : (i.inProgress ? '⏳ ' : '⬜ ');
+        return `<li>${icon}<strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(i.text)} (Mo, ${formatIsoDateDE(i.dueDate || getWeekMondayDateString(selIdx))})</li>`;
+      }).join('');
       upcomingTasksHtml += `
         <div style="margin-bottom: 14px; padding: 12px; background-color: ${lightBg}; border-left: 4px solid ${primaryColor}; border-radius: 6px;">
           <strong style="color: ${darkColor}; font-size: 15px;">${escapeHtml(mod.shortName)} (${escapeHtml(mod.fullName)})</strong>
           <ul style="margin: 8px 0 0 0; padding-left: 20px; color: #333;">${itemsHtml}</ul>
         </div>`;
       plainTextLines.push(`\n[${mod.shortName}]`);
-      items.forEach(i => plainTextLines.push(` - ${i.done ? '[x]' : '[ ]'} ${i.text}`));
+      items.forEach(i => plainTextLines.push(` - ${i.done ? '[x]' : (i.inProgress ? '[~]' : '[ ]')} ${i.text}`));
     }
   }
 
@@ -1233,7 +1573,7 @@ function buildEmailHtmlObject() {
     for (const mod of appState.modules) {
       const openLines = (pastWeek.cells[mod.shortName] || []).filter(l => !l.done);
       if (openLines.length > 0) {
-        const openHtml = openLines.map(l => `<li>${escapeHtml(l.text)}</li>`).join('');
+        const openHtml = openLines.map(l => `<li>${l.inProgress ? '⏳ ' : ''}${escapeHtml(l.text)}</li>`).join('');
         overdueTasksHtml += `
           <div style="margin-bottom: 8px;">
             <strong>${escapeHtml(mod.shortName)} (${escapeHtml(weekShort)}):</strong>
@@ -1250,7 +1590,7 @@ function buildEmailHtmlObject() {
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 3px;">
           <strong>${escapeHtml(s.shortName)}</strong>
-          <span>${s.pct} % (${s.completed}/${s.total} erledigt)</span>
+          <span>${s.pct} % (${s.completed}/${s.total} erledigt${s.inProgress ? `, ${s.inProgress} angefangen` : ''})</span>
         </div>
         <div style="width: 100%; background-color: ${borderCol}; border-radius: 6px; height: 10px; overflow: hidden;">
           <div style="width: ${s.pct}%; background-color: ${primaryColor}; height: 10px;"></div>
@@ -1261,16 +1601,16 @@ function buildEmailHtmlObject() {
   const htmlBody = `
     <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; border: 1px solid ${borderCol}; border-radius: 10px; overflow: hidden; background: #FFFFFF;">
       <div style="background: linear-gradient(135deg, ${primaryColor} 0%, ${darkColor} 100%); color: #FFFFFF; padding: 18px 24px;">
-        <h2 style="margin: 0; font-size: 20px;">🎓 Dein Semesterplan-Briefing</h2>
-        <p style="margin: 4px 0 0 0; opacity: 0.9; font-size: 14px;">${escapeHtml(upcomingWeekLabel)} • Kalender-Eintrag am Montag (${mondayStr})</p>
+        <h2 style="margin: 0; font-size: 20px;">Dein Semesterplan-Briefing</h2>
+        <p style="margin: 4px 0 0 0; opacity: 0.9; font-size: 14px;">${escapeHtml(upcomingWeekLabel)} • Wochenstart am Montag (${mondayStr})</p>
       </div>
       <div style="padding: 20px 24px; color: #2C3E50;">
-        <h3 style="margin-top: 0; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">📅 Aufgaben für diese Woche</h3>
+        <h3 style="margin-top: 0; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">Aufgaben für diese Woche</h3>
         ${upcomingTasksHtml}
-        <h3 style="margin-top: 24px; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">📊 Dein aktueller Gesamt-Lernfortschritt (${statsObj.overallPct} %)</h3>
+        <h3 style="margin-top: 24px; color: ${primaryColor}; border-bottom: 1px solid ${borderCol}; padding-bottom: 6px;">Dein aktueller Gesamt-Lernfortschritt (${statsObj.overallPct} %)</h3>
         ${progressHtml}
         ${overdueTasksHtml ? `
-          <h3 style="margin-top: 24px; color: #B03A2E; border-bottom: 1px solid #F5B7B1; padding-bottom: 6px;">⚠️ Noch offen aus Vorwochen</h3>
+          <h3 style="margin-top: 24px; color: #B03A2E; border-bottom: 1px solid #F5B7B1; padding-bottom: 6px;">Noch offen aus Vorwochen</h3>
           <div style="background-color: #FDEDEC; padding: 12px; border-radius: 6px; font-size: 13px; color: #2C3E50;">
             ${overdueTasksHtml}
           </div>
@@ -1279,7 +1619,7 @@ function buildEmailHtmlObject() {
     </div>`;
 
   return {
-    subject: `🎓 Semesterplan-Briefing: ${upcomingWeekLabel} (${statsObj.overallPct}% erledigt)`,
+    subject: `Semesterplan-Briefing: ${upcomingWeekLabel} (${statsObj.overallPct}% erledigt)`,
     htmlBody,
     plainText: plainTextLines.join('\n')
   };
@@ -1287,10 +1627,9 @@ function buildEmailHtmlObject() {
 
 function renderEmailPreview() {
   const container = document.getElementById('emailPreviewContainer');
-  if (!container) return;
+  if (!container || !appState) return;
   const { htmlBody } = buildEmailHtmlObject();
   container.innerHTML = htmlBody;
-
   const autoCheck = document.getElementById('autoWeeklyEmailCheck');
   if (autoCheck) {
     autoCheck.checked = localStorage.getItem('semesterplan_auto_weekly_email') !== 'false';
