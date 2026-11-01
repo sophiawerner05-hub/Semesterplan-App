@@ -22,30 +22,29 @@ let activeModuleFilter = null;
 let currentTab = 'table';
 
 function initApp() {
-  buildThemeMenuUI();
+  // 1. ZUERST Daten aus localStorage oder INITIAL_DATA (data.js) laden!
+  loadState();
 
-  // Gespeichertes Farbschema laden
+  // 2. Danach erst Theme-Menü bauen und Theme aktivieren (da changeTheme auf appState zugreift)
+  buildThemeMenuUI();
   const savedTheme = localStorage.getItem(THEME_KEY) || 'rose';
   changeTheme(savedTheme, false);
 
-  // iPhone-Ansicht wiederherstellen (falls aktiv)
+  // 3. iPhone-Ansicht wiederherstellen (falls aktiv)
   if (localStorage.getItem('semesterplan_iphone_view') === 'true') {
     document.body.classList.add('iphone-view-mode');
     updateIphoneBtnState();
   }
 
-  // Uhrzeit in der iPhone-Statusbar aktualisieren
+  // 4. Uhrzeit in der iPhone-Statusbar aktualisieren
   updateIosClock();
   setInterval(updateIosClock, 30000);
 
-  // Daten aus localStorage oder INITIAL_DATA laden
-  loadState();
-
-  // Dropdown für Wochen-Fokus initialisieren
+  // 5. Dropdown für Wochen-Fokus initialisieren
   populateFocusWeekDropdown();
   selectCurrentCalendarWeek(false);
 
-  // Komplette Oberfläche zeichnen
+  // 6. Komplette Oberfläche zeichnen
   renderAll();
 
   // Klick außerhalb schließt Farbdesign-Menü
@@ -70,7 +69,13 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.modules) && Array.isArray(parsed.weeks)) {
+      if (
+        parsed &&
+        Array.isArray(parsed.modules) &&
+        Array.isArray(parsed.weeks) &&
+        parsed.weeks.length > 0 &&
+        parsed.weeks[0].cells
+      ) {
         appState = parsed;
         if (!Array.isArray(appState.deletedGoogleTaskIds)) {
           appState.deletedGoogleTaskIds = [];
@@ -81,6 +86,13 @@ function loadState() {
   } catch (e) {
     console.warn('Konnte gespeicherten Status nicht laden, nutze INITIAL_DATA:', e);
   }
+
+  if (typeof INITIAL_DATA === 'undefined') {
+    console.error('KRITISCHER FEHLER: data.js (INITIAL_DATA) wurde nicht geladen!');
+    appState = { modules: [], weeks: [], deletedGoogleTaskIds: [] };
+    return;
+  }
+
   appState = JSON.parse(JSON.stringify(INITIAL_DATA));
   appState.deletedGoogleTaskIds = [];
   saveState();
