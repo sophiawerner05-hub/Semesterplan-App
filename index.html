@@ -7,15 +7,14 @@
   <link rel="stylesheet" href="styles.css">
   <!-- Offizielle Google Identity Services Bibliothek für OAuth2 -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <!-- html2pdf für direkten farbigen PDF-Download ohne Druckdialog -->
+  <!-- html2pdf für direkten farbigen PDF-Download -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
 </head>
 <body>
-
-  <!-- IPHONE RAHMEN WRAPPER (Aktiv bei iPhone-Ansicht am Desktop) -->
+  <!-- IPHONE / MOBILE WRAPPER -->
   <div id="iphoneDeviceWrapper" class="iphone-device-wrapper">
-    
-    <!-- iOS Dynamic Island & Statusbar (Nur in iPhone-Ansicht sichtbar) -->
+
+    <!-- iOS Dynamic Island & Statusbar (Sichtbar in Desktop-iPhone-Vorschau) -->
     <div class="ios-statusbar">
       <span class="ios-time" id="iosClock">09:41</span>
       <div class="ios-dynamic-island"></div>
@@ -25,17 +24,81 @@
       </div>
     </div>
 
+    <!-- SEITEN-MENÜLEISTE (SLIDE-OUT NAVIGATION DRAWER FÜR HANDY & DESKTOP) -->
+    <div class="side-drawer-backdrop" id="sideDrawerBackdrop" onclick="closeSideDrawer()"></div>
+    <aside class="side-drawer" id="sideMenuDrawer" aria-label="Seitenmenü">
+      <div class="side-drawer-header">
+        <div class="side-drawer-brand">
+          <span style="font-size: 1.5rem;">🎓</span>
+          <div>
+            <strong>Semesterplan</strong>
+            <small>WiSe 26/27 Navigation</small>
+          </div>
+        </div>
+        <button class="side-drawer-close" onclick="closeSideDrawer()" title="Menü schließen">&times;</button>
+      </div>
+
+      <div class="side-drawer-body">
+        <div class="drawer-section-title">Ansichten</div>
+        <button class="drawer-item active" id="drawerTabTable" onclick="switchTab('table'); closeSideDrawer();">
+          <span>📊</span> <span>Semesterplan (Tabelle)</span>
+        </button>
+        <button class="drawer-item" id="drawerTabFocus" onclick="switchTab('focus'); closeSideDrawer();">
+          <span>🎯</span> <span>Wochen-Fokus &amp; Rückstände</span>
+        </button>
+        <button class="drawer-item" id="drawerTabDocs" onclick="switchTab('docs'); closeSideDrawer();">
+          <span>📁</span> <span>Modul-Dokumente (Speicher)</span>
+        </button>
+        <button class="drawer-item" id="drawerTabEmail" onclick="switchTab('email'); closeSideDrawer();">
+          <span>📧</span> <span>Wochen-Briefing (E-Mail)</span>
+        </button>
+
+        <div class="drawer-section-title">Aktionen</div>
+        <button class="drawer-item" onclick="closeSideDrawer(); openTaskModal();">
+          <span>➕</span> <span>Neue Aufgabe anlegen</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); openUploadDocModal();">
+          <span>📤</span> <span>Dokument / PDF hochladen</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); handleGooglePrimaryClick();">
+          <span>🔄</span> <span>Mit Google synchronisieren</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); openPdfModal();">
+          <span>🖨️</span> <span>Farbiger PDF-Export</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); toggleIphoneView();">
+          <span>📱</span> <span id="drawerIphoneToggleText">Handy-Vorschau umschalten</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); openModal('googleSetupModal');">
+          <span>⚙️</span> <span>Google-Kopplung &amp; Backup</span>
+        </button>
+
+        <div class="drawer-section-title">Farbdesign (Ästhetische Farblehre)</div>
+        <div class="drawer-theme-list" id="drawerThemeList"></div>
+
+        <div class="drawer-section-title">Google Direktlinks</div>
+        <div class="drawer-links-row">
+          <a href="https://calendar.google.com/calendar/r" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📅 Kalender</a>
+          <a href="https://tasks.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✅ Tasks</a>
+          <a href="https://mail.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✉️ Gmail</a>
+        </div>
+      </div>
+    </aside>
+
     <!-- TOP HEADER & MENU ACTIONS -->
     <header>
       <div class="header-inner">
         <div class="brand">
+          <button type="button" class="hamburger-btn" onclick="toggleSideDrawer()" title="Seitenmenü öffnen" aria-label="Menü">
+            ☰
+          </button>
           <span class="brand-icon">🎓</span>
           <div>
             <div class="brand-title-row">
               <h1>Semesterplan App</h1>
               <span class="brand-badge" id="connectionBadge">Lokal &amp; Offline-fähig</span>
             </div>
-            <div class="brand-subtitle">Automatische Synchronisation mit Google Tasks, Kalender &amp; Gmail</div>
+            <div class="brand-subtitle">Synchron mit Google Tasks (Montags-Modus), Kalender, Gmail &amp; Modul-Dokumentenspeicher</div>
           </div>
         </div>
 
@@ -55,8 +118,9 @@
           </div>
 
           <button class="btn btn-header" onclick="openTaskModal()" title="Neue Aufgabe anlegen">➕ Neue Aufgabe</button>
+          <button class="btn btn-header" onclick="openUploadDocModal()" title="Vorlesungs- oder Übungsdokument hochladen">📁 + Dokument</button>
 
-          <!-- VEREINTER GOOGLE SYNC & KOPPLUNG BUTTON MIT ECHTEM GOOGLE ICON -->
+          <!-- VEREINTER GOOGLE SYNC & KOPPLUNG BUTTON -->
           <div class="google-btn-group">
             <button class="btn btn-header google-main-btn" onclick="handleGooglePrimaryClick()" id="googleMainBtn" title="Google Live-Sync (Klicken zum Verbinden oder Synchronisieren)">
               <svg class="google-svg-icon" viewBox="0 0 24 24" width="16" height="16">
@@ -74,15 +138,14 @@
     </header>
 
     <main class="container" id="mainExportArea">
-
       <!-- STATUS & QUICK LINKS STRIP -->
       <div class="integration-strip no-print">
         <div class="status-group">
           <span class="status-pill" id="syncStatusPill">🔄 Auto-Sync: Bereit</span>
+          <span class="status-pill" id="emailStatusPill" title="Status des automatischen wöchentlichen E-Mail-Briefings">📩 Wochen-Mail: Aktiv</span>
           <span id="overallStatusText" class="overall-status-text"></span>
         </div>
         <div class="quick-links">
-          <!-- ECHTES GOOGLE KALENDER ICON -->
           <a href="https://calendar.google.com/calendar/r" target="_blank" rel="noopener" class="btn btn-outline btn-sm google-service-link">
             <svg viewBox="0 0 24 24" width="16" height="16">
               <path fill="#4285F4" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10z"/>
@@ -92,8 +155,6 @@
             </svg>
             <span>Kalender</span>
           </a>
-
-          <!-- ECHTES GOOGLE TASKS ICON -->
           <a href="https://tasks.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm google-service-link">
             <svg viewBox="0 0 24 24" width="16" height="16">
               <circle cx="12" cy="12" r="10" fill="#4285F4"/>
@@ -101,8 +162,6 @@
             </svg>
             <span>Tasks</span>
           </a>
-
-          <!-- ECHTES GMAIL ICON -->
           <a href="https://mail.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm google-service-link">
             <svg viewBox="0 0 24 24" width="16" height="16">
               <path fill="#EA4335" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
@@ -112,8 +171,7 @@
             </svg>
             <span>Gmail</span>
           </a>
-
-          <button class="btn btn-outline btn-sm" id="iphoneViewBtn" onclick="toggleIphoneView()" title="Echte iPhone-Ansicht ein-/ausschalten">📱 iPhone-Ansicht</button>
+          <button class="btn btn-outline btn-sm" id="iphoneViewBtn" onclick="toggleIphoneView()" title="Handy-Ansicht ein-/ausschalten">📱 Handy-Ansicht</button>
           <button class="btn btn-outline btn-sm" onclick="openPdfModal()" title="Farbige PDF-Vorschau &amp; Export öffnen">🖨️ PDF</button>
         </div>
       </div>
@@ -126,9 +184,9 @@
         <div class="tabs">
           <button class="tab-btn active" id="tabBtnTable" onclick="switchTab('table')">📊 Semesterplan</button>
           <button class="tab-btn" id="tabBtnFocus" onclick="switchTab('focus')">🎯 Wochen-Fokus &amp; Rückstände</button>
+          <button class="tab-btn" id="tabBtnDocs" onclick="switchTab('docs')">📁 Modul-Dokumente</button>
           <button class="tab-btn" id="tabBtnEmail" onclick="switchTab('email')">📧 E-Mail-Briefing</button>
         </div>
-
         <div class="filter-controls" id="tableFilters">
           <input type="text" id="searchInput" class="input-search" placeholder="🔍 Suche (z.B. Testat, ÜB 3, FEM)..." oninput="renderAll()">
           <select id="statusFilter" class="select-box" onchange="renderAll()">
@@ -138,6 +196,11 @@
           </select>
           <button class="btn btn-outline btn-sm" id="clearModuleFilterBtn" style="display:none;" onclick="setModuleFilter(null)">✖ Filter aufheben</button>
         </div>
+      </div>
+
+      <!-- DRAG & DROP HINWEIS -->
+      <div id="dragHintBanner" class="drag-hint-banner no-print">
+        <span>💡 <strong>Tipp:</strong> Du kannst Aufgaben am Griff <code>⠿</code> per <strong>Drag &amp; Drop</strong> innerhalb einer Woche umsortieren oder direkt in eine andere Woche / ein anderes Modul ziehen! Alle Aufgaben werden automatisch am <strong>Montag</strong> der jeweiligen Woche im Kalender &amp; in Google Tasks eingetragen.</span>
       </div>
 
       <!-- TAB 1: TABLE / RESPONSIVE CARDS -->
@@ -172,27 +235,60 @@
         </div>
       </div>
 
-      <!-- TAB 3: EMAIL BRIEFING -->
-      <div id="viewEmail" class="hidden">
-        <div class="panel email-panel">
-          <h2 class="no-print">
-            <span>📧 Dein Sonntags-Briefing (Vorschau)</span>
-            <div class="email-actions">
-              <button class="btn btn-outline btn-sm" onclick="triggerMailtoFallback()">✉️ Im Mail-Programm öffnen</button>
-              <button class="btn btn-primary btn-sm" onclick="sendBriefingViaGmailAPI()">📨 Direkt via Gmail API senden</button>
+      <!-- TAB 3: MODUL-DOKUMENTENSPEICHER (VORLESUNGS- & ÜBUNGSSPEICHER) -->
+      <div id="viewDocs" class="hidden">
+        <div class="panel">
+          <div class="docs-header-bar">
+            <div>
+              <h2>📁 Vorlesungs- &amp; Übungsspeicher (pro Modul)</h2>
+              <p class="modal-hint" style="margin-bottom:0;">Lade PDFs, Vorlesungsfolien, Übungsblätter, Zusammenfassungen oder Bilder direkt in das jeweilige Modul hoch. Gespeichert in deiner lokalen Datenbank (IndexedDB).</p>
             </div>
-          </h2>
-          <div id="emailPreviewContainer" style="margin-top: 16px;"></div>
+            <div class="docs-controls">
+              <select id="docsModuleFilter" class="select-box" onchange="renderModuleDocsView()">
+                <option value="all">Alle Module anzeigen</option>
+              </select>
+              <select id="docsCategoryFilter" class="select-box" onchange="renderModuleDocsView()">
+                <option value="all">Alle Kategorien</option>
+                <option value="Vorlesung">📖 Vorlesung</option>
+                <option value="Übung">✍️ Übung</option>
+                <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
+                <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
+                <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
+              </select>
+              <button class="btn btn-primary" onclick="openUploadDocModal()">📤 Dokument hochladen</button>
+            </div>
+          </div>
+          <div id="moduleDocsGrid" class="module-docs-grid"></div>
         </div>
       </div>
 
+      <!-- TAB 4: EMAIL BRIEFING -->
+      <div id="viewEmail" class="hidden">
+        <div class="panel email-panel">
+          <h2 class="no-print">
+            <span>📧 Dein Wochen-Briefing (Vorschau &amp; Automatik)</span>
+            <div class="email-actions">
+              <button class="btn btn-outline btn-sm" onclick="triggerMailtoFallback()">✉️ Im Mail-Programm öffnen</button>
+              <button class="btn btn-primary btn-sm" onclick="sendBriefingViaGmailAPI(false)">📨 Jetzt via Gmail API senden</button>
+            </div>
+          </h2>
+          <div class="email-auto-info no-print">
+            <label class="checkbox-label">
+              <input type="checkbox" id="autoWeeklyEmailCheck" checked onchange="toggleAutoWeeklyEmail(this.checked)">
+              <span><strong>Automatischer wöchentlicher Versand aktiv:</strong> Sendet jeden Sonntag (bzw. beim ersten Öffnen der neuen Woche) automatisch dein Briefing per Gmail API.</span>
+            </label>
+            <small id="lastAutoEmailInfo" style="display:block; margin-top:4px; color:var(--text-muted);"></small>
+          </div>
+          <div id="emailPreviewContainer" style="margin-top: 16px;"></div>
+        </div>
+      </div>
     </main>
 
-    <!-- NATIVE iOS BOTTOM TAB BAR (Sichtbar in iPhone-Ansicht & auf Smartphones) -->
+    <!-- NATIVE iOS BOTTOM TAB BAR (Ergänzend zur Seiten-Menüleiste) -->
     <nav class="ios-bottom-nav no-print">
       <button class="ios-nav-item active" id="iosTabTable" onclick="switchTab('table')">
         <span class="ios-nav-icon">📊</span>
-        <span class="ios-nav-label">Semesterplan</span>
+        <span class="ios-nav-label">Plan</span>
       </button>
       <button class="ios-nav-item" id="iosTabFocus" onclick="switchTab('focus')">
         <span class="ios-nav-icon">🎯</span>
@@ -202,15 +298,18 @@
         <span class="ios-nav-icon ios-add-circle">＋</span>
         <span class="ios-nav-label">Aufgabe</span>
       </button>
-      <button class="ios-nav-item" id="iosTabEmail" onclick="switchTab('email')">
-        <span class="ios-nav-icon">📧</span>
-        <span class="ios-nav-label">Briefing</span>
+      <button class="ios-nav-item" id="iosTabDocs" onclick="switchTab('docs')">
+        <span class="ios-nav-icon">📁</span>
+        <span class="ios-nav-label">Dokumente</span>
+      </button>
+      <button class="ios-nav-item" id="iosTabMenu" onclick="toggleSideDrawer()">
+        <span class="ios-nav-icon">☰</span>
+        <span class="ios-nav-label">Menü</span>
       </button>
     </nav>
-
   </div>
 
-  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN -->
+  <!-- MODAL 1: AUFGABE HINZUFÜGEN / BEARBEITEN (INKL. REIHENFOLGE-AUSWAHL) -->
   <div class="modal-backdrop" id="taskModal">
     <div class="modal">
       <div class="modal-header">
@@ -225,11 +324,11 @@
         <div class="form-grid">
           <div class="form-group">
             <label for="taskModuleSelect">Modul / Fach</label>
-            <select id="taskModuleSelect" class="select-box full-width"></select>
+            <select id="taskModuleSelect" class="select-box full-width" onchange="updateTaskPositionOptions()"></select>
           </div>
           <div class="form-group">
-            <label for="taskWeekSelect">Semesterwoche (wird in Google Tasks als Unteraufgabe dieser Woche angelegt)</label>
-            <select id="taskWeekSelect" class="select-box full-width"></select>
+            <label for="taskWeekSelect">Semesterwoche (Kalender-Anzeige am Montag der Woche)</label>
+            <select id="taskWeekSelect" class="select-box full-width" onchange="updateTaskPositionOptions()"></select>
           </div>
         </div>
 
@@ -240,19 +339,24 @@
 
         <div class="form-grid" style="margin-top: 14px;">
           <div class="form-group">
-            <label for="taskDueDateInput">Optionales genaues Datum (für Kalender / Abgabe)</label>
+            <label for="taskPositionSelect">Position / Reihenfolge in dieser Woche</label>
+            <select id="taskPositionSelect" class="select-box full-width"></select>
+          </div>
+          <div class="form-group">
+            <label for="taskDueDateInput">Optionales abweichendes Datum (leer = Montag der Woche)</label>
             <input type="date" id="taskDueDateInput">
           </div>
-          <div class="form-group checkbox-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="taskSyncCalendarCheck">
-              <span>Zusätzlich als Termin im Google Kalender eintragen</span>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="taskDoneCheck">
-              <span>Bereits erledigt (✅)</span>
-            </label>
-          </div>
+        </div>
+
+        <div class="form-group checkbox-group" style="margin-top: 14px;">
+          <label class="checkbox-label">
+            <input type="checkbox" id="taskSyncCalendarCheck" checked>
+            <span>Im Google Kalender am Montag der Woche (bzw. gewähltem Datum) anzeigen</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="taskDoneCheck">
+            <span>Bereits erledigt (✅)</span>
+          </label>
         </div>
       </div>
       <div class="modal-footer">
@@ -263,7 +367,68 @@
     </div>
   </div>
 
-  <!-- MODAL 2: PDF-VORSCHAU & FARBIGER PDF-EXPORT -->
+  <!-- MODAL 2: DOKUMENT HOCHLADEN (VORLESUNGS- & ÜBUNGSSPEICHER) -->
+  <div class="modal-backdrop" id="uploadDocModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📤 Dokument zum Modulspeicher hinzufügen</h3>
+        <button class="modal-close" onclick="closeModal('uploadDocModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="docModuleSelect">Modul / Fach</label>
+            <select id="docModuleSelect" class="select-box full-width"></select>
+          </div>
+          <div class="form-group">
+            <label for="docCategorySelect">Kategorie</label>
+            <select id="docCategorySelect" class="select-box full-width">
+              <option value="Vorlesung">📖 Vorlesung</option>
+              <option value="Übung">✍️ Übung</option>
+              <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
+              <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
+              <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top: 14px;">
+          <div class="form-group">
+            <label for="docWeekSelect">Zugehörige Semesterwoche (optional)</label>
+            <select id="docWeekSelect" class="select-box full-width"></select>
+          </div>
+          <div class="form-group">
+            <label for="docCustomTitle">Eigener Titel / Notiz (optional)</label>
+            <input type="text" id="docCustomTitle" placeholder="z.B. Folien V3 – Wärmeleitung">
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 14px;">
+          <label for="docFileInput">Datei(en) auswählen (PDF, Word, Bilder, Python/Java/ZIP – Mehrfachauswahl möglich)</label>
+          <input type="file" id="docFileInput" multiple class="file-input-box">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
+        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Im Modul speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: DOKUMENT-VORSCHAU -->
+  <div class="modal-backdrop" id="docPreviewModal">
+    <div class="modal modal-large">
+      <div class="modal-header">
+        <h3 id="docPreviewTitle">📄 Dokument-Vorschau</h3>
+        <button class="modal-close" onclick="closeModal('docPreviewModal')">&times;</button>
+      </div>
+      <div class="modal-body" id="docPreviewBody" style="min-height: 60vh; display:flex; justify-content:center; align-items:center;"></div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('docPreviewModal')">Schließen</button>
+        <a id="docPreviewDownloadBtn" class="btn btn-primary" download>⬇️ Datei herunterladen</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: PDF-VORSCHAU & FARBIGER PDF-EXPORT -->
   <div class="modal-backdrop" id="pdfModal">
     <div class="modal modal-large">
       <div class="modal-header">
@@ -272,7 +437,7 @@
       </div>
       <div class="modal-body">
         <p class="modal-hint">
-          Dein aktuell ausgewähltes Farbdesign (<strong id="pdfThemeNameLabel">Original Rosa</strong>) wird vollständig in das PDF übernommen. Du kannst die Datei direkt herunterladen oder über den System-Dialog speichern.
+          Dein aktuell ausgewähltes Farbdesign (<strong id="pdfThemeNameLabel">Original Rosa</strong>) wird vollständig in das PDF übernommen.
         </p>
         <div class="pdf-options-bar">
           <label class="checkbox-label">
@@ -294,7 +459,7 @@
     </div>
   </div>
 
-  <!-- MODAL 3: GOOGLE API SETUP & BACKUP -->
+  <!-- MODAL 5: GOOGLE API SETUP & BACKUP -->
   <div class="modal-backdrop" id="googleSetupModal">
     <div class="modal">
       <div class="modal-header">
@@ -306,24 +471,20 @@
           <label for="clientIdInput">Hinterlegte Google OAuth 2.0 Client-ID (Automatisch aktiv)</label>
           <input type="text" id="clientIdInput" value="420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com">
           <small class="field-note">
-            Deine Client-ID ist bereits fest voreingestellt. Sobald du einmal verbunden bist, synchronisiert die App im Hintergrund automatisch.
+            Alle Aufgaben und Wochen-Oberaufgaben werden beim Sync automatisch einheitlich benannt (<code>📅 [Modul] Woche X</code>) und auf den <strong>Montag der jeweiligen Woche</strong> datiert.
           </small>
         </div>
-
         <div class="form-group" style="margin-bottom: 16px;">
           <label class="checkbox-label">
             <input type="checkbox" id="autoImportCalendarCheck" checked onchange="saveGoogleConfig()">
             <span>Kalender-Termine mit Modulnamen (z.B. „CAD“, „Mathe 2“, „Testat“) beim Sync automatisch importieren</span>
           </label>
         </div>
-
         <div class="sync-action-box">
           <button class="btn btn-primary" onclick="saveGoogleConfigAndConnect()">🔗 Mit Google Konto verbinden / Erneuern</button>
-          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich jetzt ausführen</button>
+          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich &amp; Namens-Reparatur ausführen</button>
         </div>
-
         <hr class="modal-divider">
-
         <h4 style="margin-bottom: 8px; color: var(--primary-dark);">💾 Lokales Backup (JSON Export / Import)</h4>
         <p class="modal-hint">Sichere deinen gesamten Plan als Datei oder übertrage ihn auf ein anderes Gerät:</p>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">

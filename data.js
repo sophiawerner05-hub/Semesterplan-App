@@ -1,6 +1,5 @@
 /* =========================================================
    INITIAL-DATEN DES SEMESTERPLANS (data.js)
-   (Informatik & CAD: HSÜ und Übungen um 1 Woche verschoben)
    ========================================================= */
 const INITIAL_DATA = {
   "modules": [
@@ -41,7 +40,7 @@ const INITIAL_DATA = {
         "Mathe 2": [{"text": "Vorlesung: V1 (S. 1–37)", "done": false}],
         "CAD": [
           {"text": "Vorlesung: V4 (Schnitt-/Bruchdarstellungen)", "done": false},
-          {"text": "Testat 1", "done": false, "dueDate": "2026-10-30"}
+          {"text": "Testat 1", "done": false, "dueDate": "2026-10-26"}
         ]
       }
     },
@@ -79,7 +78,7 @@ const INITIAL_DATA = {
         "CAD": [
           {"text": "Vorlesung: V5 (Maßtoleranzen & Passungen)", "done": false},
           {"text": "Aufgabensammlung: Typ J, Typ F", "done": false},
-          {"text": "Testat 2", "done": false, "dueDate": "2026-11-13"}
+          {"text": "Testat 2", "done": false, "dueDate": "2026-11-09"}
         ]
       }
     },
@@ -142,7 +141,7 @@ const INITIAL_DATA = {
         "CAD": [
           {"text": "Hörsaalübung: HSÜ 5", "done": false},
           {"text": "Selfassessment: Test V6", "done": false},
-          {"text": "Testat 3", "done": false, "dueDate": "2026-12-04"}
+          {"text": "Testat 3", "done": false, "dueDate": "2026-11-30"}
         ]
       }
     },
@@ -267,7 +266,7 @@ const INITIAL_DATA = {
         ],
         "CAD": [
           {"text": "Hörsaalübung: HSÜ 8", "done": false},
-          {"text": "Testat 4", "done": false, "dueDate": "2027-01-15"}
+          {"text": "Testat 4", "done": false, "dueDate": "2027-01-11"}
         ]
       }
     },
@@ -342,7 +341,7 @@ const INITIAL_DATA = {
         "Mathe 2": [],
         "CAD": [
           {"text": "Aufgabensammlung: Typ B, Typ A", "done": false},
-          {"text": "Testat 5", "done": false, "dueDate": "2027-02-12"}
+          {"text": "Testat 5", "done": false, "dueDate": "2027-02-08"}
         ]
       }
     }
