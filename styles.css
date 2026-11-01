@@ -1894,4 +1894,66 @@ body.iphone-view-mode .ios-bottom-nav {
     margin: 0 !important;
     padding: 10px !important;
   }
-}
+}  /* =========================================================
+     15. DOKUMENTEN-DIREKTZUGRIFF IN DER AUFGABEN-ÜBERSICHT
+         & AUSBLENDEN DER DATUMS-BADGES BEI AUFGABEN
+     ========================================================= */
+  .date-tag {
+    display: none !important;
+  }
+
+  .task-docs-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+  }
+
+  .task-doc-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--primary-light);
+    color: var(--primary-dark);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    max-width: 100%;
+    transition: all 0.15s ease;
+  }
+
+  .task-doc-chip:hover {
+    background: var(--primary);
+    color: #FFFFFF;
+    border-color: var(--primary);
+  }
+
+  .task-doc-chip.solution-chip {
+    background: var(--success-bg);
+    color: var(--success-text);
+    border-color: var(--success-border);
+  }
+
+  .task-doc-chip.solution-chip:hover {
+    background: var(--success-text);
+    color: #FFFFFF;
+  }
+
+  .task-doc-chip-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 175px;
+  }
+
+  .cell-docs-footer {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--primary-border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }

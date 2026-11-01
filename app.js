@@ -1,11 +1,12 @@
 /* =========================================================
    HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
+   - Ohne "Mo, Datum"-Badge bei einzelnen Aufgaben
+   - Direkter Zugriff auf dazugehörige Dokumente (Vorschau & Upload)
+     direkt in der Aufgaben-Übersicht (Tabelle & Wochen-Fokus)
    - Status "Angefangen" (inProgress) für Aufgaben
    - Intelligente Wochen- & Kategorie-Einsortierung beim Datei-Upload
      inkl. Rückfrage/Bestätigung für jedes einzelne Dokument
-   - Neue Dokumenten-Kategorie "Lösungen"
-   - 5 ästhetische dunkle Farbschemata (Dark Themes)
-   - Ohne Tipp-Banner in der Web-Übersicht
+   - Dokumenten-Kategorie "Lösungen" & 5 dunkle Farbschemata
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -46,40 +47,29 @@ let cachedDocsList = [];
 let pendingUploadPlans = [];
 
 async function initApp() {
-  // 1. Zuerst Status laden
   loadState();
-
-  // 2. Tipp-Banner dauerhaft entfernen & neue UI-Optionen sicherstellen
   document.getElementById('dragHintBanner')?.remove();
   ensureExtendedUIElements();
 
-  // 3. Farbschemata im Header & Seitenmenü aufbauen
   buildThemeMenuUI();
   const savedTheme = localStorage.getItem(THEME_KEY) || 'rose';
   changeTheme(savedTheme, false);
 
-  // 4. Handy-Ansicht wiederherstellen (falls aktiv)
   if (localStorage.getItem('semesterplan_iphone_view') === 'true') {
     document.body.classList.add('iphone-view-mode');
     updateIphoneBtnState();
   }
 
-  // 5. Uhrzeit aktualisieren
   updateIosClock();
   setInterval(updateIosClock, 30000);
 
-  // 6. Dropdowns initialisieren
   populateFocusWeekDropdown();
   populateDocsFilterDropdowns();
   selectCurrentCalendarWeek(false);
 
-  // 7. Gespeicherte Modul-Dokumente aus IndexedDB laden
   await refreshDocsCache();
-
-  // 8. Oberfläche zeichnen
   renderAll();
 
-  // Klick außerhalb schließt Farbdesign-Menü
   document.addEventListener('click', (e) => {
     const container = document.getElementById('themeDropdownContainer');
     const menu = document.getElementById('themeMenu');
@@ -90,7 +80,6 @@ async function initApp() {
 }
 
 function ensureExtendedUIElements() {
-  // Status-Filter um "Angefangen" ergänzen
   const statusFilter = document.getElementById('statusFilter');
   if (statusFilter && !statusFilter.querySelector('option[value="in_progress"]')) {
     const opt = document.createElement('option');
@@ -104,7 +93,6 @@ function ensureExtendedUIElements() {
     }
   }
 
-  // Im Aufgaben-Modal Checkbox "Angefangen (⏳)" ergänzen, falls noch nicht im HTML
   const doneCheck = document.getElementById('taskDoneCheck');
   if (doneCheck && !document.getElementById('taskInProgressCheck')) {
     const group = doneCheck.closest('.checkbox-group');
@@ -125,7 +113,6 @@ function ensureExtendedUIElements() {
     }
   }
 
-  // Im Upload-Modal den Vorschau-Container für intelligente Wochen-Einsortierung anbinden
   const fileInput = document.getElementById('docFileInput');
   if (fileInput) {
     fileInput.onchange = handleDocFilesSelected;
@@ -298,7 +285,7 @@ function openModuleDocsDirectly(shortName, event) {
 }
 
 /* =========================================================
-   DATUM-HILFSFUNKTIONEN (ALLE AUFGABEN AM MONTAG DER WOCHE)
+   DATUM-HILFSFUNKTIONEN
    ========================================================= */
 function parseWeekDates(weekLabel) {
   if (!weekLabel) return null;
@@ -361,7 +348,111 @@ function findWeekIndexByDate(dateObj) {
 }
 
 /* =========================================================
-   STATISTIK & FORTSCHRITTSBERECHNUNG (INKL. "ANGEFANGEN")
+   DOKUMENTEN-VERKNÜPFUNG FÜR AUFGABEN & WOCHENZELLEN
+   ========================================================= */
+function getDocsForTask(weekIdx, shortName, taskText) {
+  if (!Array.isArray(cachedDocsList) || cachedDocsList.length === 0) return [];
+  const week = appState.weeks[weekIdx];
+  const weekOneLine = week ? week.weekLabel.replace(/\n/g, ' ').trim() : '';
+  const weekShort = week ? week.weekLabel.split('\n')[0].trim().toLowerCase() : '';
+  const modDocs = cachedDocsList.filter(d => d.module === shortName);
+  if (modDocs.length === 0) return [];
+
+  const tokenRegex = /\b(v\s*\d+|le\s*\d+|üb\s*\d+|ueb\s*\d+|ü\s*\d+|hsü\s*\d+|hsu\s*\d+|testat\s*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
+  const taskTokens = (taskText.match(tokenRegex) || []).map(t =>
+    t.toLowerCase().replace(/ueb|^ü(?=\s*\d)/, 'üb').replace(/hsu/, 'hsü').replace(/\s+/g, '')
+  );
+
+  const taskLower = taskText.toLowerCase();
+  const isVorlesung = taskLower.includes('vorlesung') || /\b(v\s*\d+|le\s*\d+|2-\d{2})\b/i.test(taskText);
+  const isUebung = /\b(übung|uebung|üb\s*\d+|aufgabensammlung)\b/i.test(taskText) && !taskLower.includes('hörsaal');
+  const isHsu = /\b(hörsaalübung|hsü)\b/i.test(taskText);
+  const isTestat = /\b(testat|praktikum|selfassessment)\b/i.test(taskText);
+
+  return modDocs.filter(doc => {
+    const docNameNorm = (doc.title + ' ' + (doc.fileName || '')).toLowerCase()
+      .replace(/ueb/g, 'üb').replace(/hsu/g, 'hsü').replace(/\s+/g, '');
+
+    // 1. Direkter Treffer über gleiches Kürzel (z.B. ÜB 3, V4, LE 5, Testat 2)
+    if (taskTokens.length > 0 && taskTokens.some(tok => docNameNorm.includes(tok))) {
+      return true;
+    }
+
+    // 2. Treffer über gleiche Semesterwoche + passende Kategorie
+    const docWeek = (doc.weekLabel || '').trim();
+    const sameWeek = docWeek && (docWeek === weekOneLine || docWeek.toLowerCase().startsWith(weekShort));
+    if (sameWeek) {
+      if (isVorlesung && doc.category === 'Vorlesung') return true;
+      if (isUebung && (doc.category === 'Übung' || doc.category === 'Lösungen')) return true;
+      if (isHsu && (doc.category === 'Hörsaalübung' || doc.category === 'Lösungen')) return true;
+      if (isTestat && (doc.category === 'Testat / Praktikum' || doc.category === 'Lösungen')) return true;
+      const cellTasks = week?.cells?.[shortName] || [];
+      if (cellTasks.length === 1) return true;
+    }
+    return false;
+  });
+}
+
+function getRemainingWeekDocs(weekIdx, shortName, alreadyShownDocIds) {
+  if (!Array.isArray(cachedDocsList) || cachedDocsList.length === 0) return [];
+  const week = appState.weeks[weekIdx];
+  if (!week) return [];
+  const weekOneLine = week.weekLabel.replace(/\n/g, ' ').trim();
+  const weekShort = week.weekLabel.split('\n')[0].trim().toLowerCase();
+
+  return cachedDocsList.filter(doc => {
+    if (doc.module !== shortName) return false;
+    if (alreadyShownDocIds && alreadyShownDocIds.has(doc.id)) return false;
+    const docWeek = (doc.weekLabel || '').trim();
+    return docWeek && (docWeek === weekOneLine || docWeek.toLowerCase().startsWith(weekShort));
+  });
+}
+
+function renderTaskDocChipsHtml(docs) {
+  if (!docs || docs.length === 0) return '';
+  const chips = docs.map(doc => {
+    const isSol = doc.category === 'Lösungen';
+    const icon = isSol ? '✅' : '📄';
+    return `
+      <button type="button"
+              class="task-doc-chip ${isSol ? 'solution-chip' : ''}"
+              onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}')"
+              title="${escapeAttr(doc.category + ': ' + doc.title)} (Klicken zur Vorschau)">
+        <span>${icon}</span>
+        <span class="task-doc-chip-title">${escapeHtml(doc.title)}</span>
+      </button>
+    `;
+  }).join('');
+  return `<div class="task-docs-row">${chips}</div>`;
+}
+
+function openUploadDocForTask(weekIdx, shortName, itemIdx, event) {
+  if (event) event.stopPropagation();
+  const week = appState.weeks[weekIdx];
+  const item = week?.cells?.[shortName]?.[itemIdx];
+  openUploadDocModal(shortName);
+
+  if (week) {
+    const weekSel = document.getElementById('docWeekSelect');
+    const oneLine = week.weekLabel.replace(/\n/g, ' ');
+    if (weekSel) weekSel.value = oneLine;
+  }
+  if (item) {
+    const catSel = document.getElementById('docCategorySelect');
+    const txt = item.text.toLowerCase();
+    if (catSel) {
+      if (txt.includes('hörsaal') || txt.includes('hsü')) catSel.value = 'Hörsaalübung';
+      else if (txt.includes('übung') || txt.includes('üb ')) catSel.value = 'Übung';
+      else if (txt.includes('testat')) catSel.value = 'Testat / Praktikum';
+      else catSel.value = 'Vorlesung';
+    }
+    const titleInput = document.getElementById('docCustomTitle');
+    if (titleInput) titleInput.placeholder = `Unterlage zu: ${item.text}`;
+  }
+}
+
+/* =========================================================
+   STATISTIK & FORTSCHRITTSBERECHNUNG
    ========================================================= */
 function calculateStats() {
   const moduleStats = {};
@@ -499,10 +590,17 @@ function renderTable(stats) {
       const cellClass = allItems.length === 0 ? 'empty-cell' : (allDone ? 'completed-cell' : '');
       const dropAttrs = `ondragover="handleCellDragOver(event)" ondragleave="handleCellDragLeave(event)" ondrop="handleCellDrop(event, ${wIdx}, '${escapeAttr(mod.shortName)}')"`;
 
+      const shownDocIds = new Set();
+
       if (filteredItems.length === 0) {
+        const remainingDocs = getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds);
+        const remainingDocsHtml = remainingDocs.length > 0
+          ? `<div class="cell-docs-footer">${renderTaskDocChipsHtml(remainingDocs)}</div>`
+          : '';
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
             <span class="empty-dash">–</span>
+            ${remainingDocsHtml}
             <button class="add-task-btn" onclick="openTaskModal(${wIdx}, '${escapeAttr(mod.shortName)}')">+ Aufgabe</button>
           </td>
         `;
@@ -511,9 +609,11 @@ function renderTable(stats) {
           const isTestat = /testat\s*\d+/i.test(item.text);
           const badgeHtml = isTestat ? `<span class="testat-tag">TESTAT</span>` : '';
           const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
-          const effectiveDate = item.dueDate || mondayIso;
-          const dateHtml = `<span class="date-tag" title="Kalenderdatum (Montag der Woche)">Mo, ${formatIsoDateDE(effectiveDate)}</span>`;
           const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
+
+          const taskDocs = getDocsForTask(wIdx, mod.shortName, item.text);
+          taskDocs.forEach(d => shownDocIds.add(d.id));
+          const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
 
           return `
             <li class="task-item ${statusClass}"
@@ -526,9 +626,11 @@ function renderTable(stats) {
               <span class="drag-handle" title="Ziehen zum Verschieben (Drag & Drop)">⠿</span>
               <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
               <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-                ${escapeHtml(item.text)} ${inProgBadge} ${badgeHtml} ${dateHtml}
+                ${escapeHtml(item.text)} ${inProgBadge} ${badgeHtml}
+                ${docsChipsHtml}
               </span>
               <div class="task-actions">
+                <button class="task-action-btn" title="Dokument zu dieser Aufgabe hochladen" onclick="openUploadDocForTask(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, event)">📎</button>
                 <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" title="Als angefangen markieren / aufheben" onclick="toggleTaskInProgress(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
                 <button class="task-action-btn" title="Nach oben" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
                 <button class="task-action-btn" title="Nach unten" onclick="moveTaskOrder(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
@@ -539,9 +641,15 @@ function renderTable(stats) {
           `;
         }).join('');
 
+        const remainingDocs = getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds);
+        const remainingDocsHtml = remainingDocs.length > 0
+          ? `<div class="cell-docs-footer">${renderTaskDocChipsHtml(remainingDocs)}</div>`
+          : '';
+
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
             <ul class="task-list">${listHtml}</ul>
+            ${remainingDocsHtml}
             <button class="add-task-btn" onclick="openTaskModal(${wIdx}, '${escapeAttr(mod.shortName)}')">+ Aufgabe</button>
           </td>
         `;
@@ -695,7 +803,7 @@ function moveTaskOrder(weekIdx, shortName, itemIdx, direction) {
 }
 
 /* =========================================================
-   TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE
+   TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE (INKL. DOKUMENTEN-ZUGRIFF)
    ========================================================= */
 function populateFocusWeekDropdown() {
   const select = document.getElementById('focusWeekSelect');
@@ -748,21 +856,27 @@ function renderFocusView() {
   appState.modules.forEach(mod => {
     const items = week.cells[mod.shortName] || [];
     if (items.length === 0) return;
+    const shownDocIds = new Set();
+
     const listHtml = items.map((item, idx) => {
       weekTotal++;
       if (item.done) weekDone++;
-      const dateStr = formatIsoDateDE(item.dueDate || mondayIso);
       const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
       const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
+
+      const taskDocs = getDocsForTask(selIdx, mod.shortName, item.text);
+      taskDocs.forEach(d => shownDocIds.add(d.id));
+      const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
 
       return `
         <li class="task-item ${statusClass}">
           <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
           <span class="task-text" onclick="toggleTaskDone(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
             <strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(item.text)} ${inProgBadge}
-            <span class="date-tag">Mo, ${dateStr}</span>
+            ${docsChipsHtml}
           </span>
           <div class="task-actions">
+            <button class="task-action-btn" title="Dokument zu dieser Aufgabe hochladen" onclick="openUploadDocForTask(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, event)">📎</button>
             <button class="task-action-btn ${item.inProgress && !item.done ? 'active-progress' : ''}" onclick="toggleTaskInProgress(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx})">⏳</button>
             <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, -1)">↑</button>
             <button class="task-action-btn" onclick="moveTaskOrder(${selIdx}, '${escapeAttr(mod.shortName)}', ${idx}, 1)">↓</button>
@@ -773,10 +887,19 @@ function renderFocusView() {
       `;
     }).join('');
 
+    const remainingDocs = getRemainingWeekDocs(selIdx, mod.shortName, shownDocIds);
+    const remainingDocsHtml = remainingDocs.length > 0
+      ? `<div class="cell-docs-footer">${renderTaskDocChipsHtml(remainingDocs)}</div>`
+      : '';
+
     upcomingHtml += `
       <div class="module-focus-card">
-        <h4>${escapeHtml(mod.shortName)} – ${escapeHtml(mod.fullName)}</h4>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h4 style="margin-bottom:0;">${escapeHtml(mod.shortName)} – ${escapeHtml(mod.fullName)}</h4>
+          <button type="button" class="stat-doc-btn" onclick="openModuleDocsDirectly('${escapeAttr(mod.shortName)}', event)">📁 Modulspeicher</button>
+        </div>
         <ul class="task-list">${listHtml}</ul>
+        ${remainingDocsHtml}
       </div>
     `;
   });
@@ -797,14 +920,19 @@ function renderFocusView() {
         .map((item, idx) => ({ item, idx }))
         .filter(({ item }) => !item.done);
       if (openItems.length > 0) {
-        const listHtml = openItems.map(({ item, idx }) => `
-          <li class="task-item ${item.inProgress ? 'in-progress' : ''}">
-            <input type="checkbox" class="task-checkbox" onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-            <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
-              ${escapeHtml(item.text)} ${item.inProgress ? '<span class="inprogress-tag">⏳ Angefangen</span>' : ''}
-            </span>
-          </li>
-        `).join('');
+        const listHtml = openItems.map(({ item, idx }) => {
+          const taskDocs = getDocsForTask(wIdx, mod.shortName, item.text);
+          const docsChipsHtml = renderTaskDocChipsHtml(taskDocs);
+          return `
+            <li class="task-item ${item.inProgress ? 'in-progress' : ''}">
+              <input type="checkbox" class="task-checkbox" onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+              <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
+                ${escapeHtml(item.text)} ${item.inProgress ? '<span class="inprogress-tag">⏳ Angefangen</span>' : ''}
+                ${docsChipsHtml}
+              </span>
+            </li>
+          `;
+        }).join('');
         overdueHtml += `
           <div class="overdue-box">
             <h4>${escapeHtml(mod.shortName)} (${escapeHtml(shortWeekName)})</h4>
@@ -1153,12 +1281,10 @@ function openUploadDocModal(preselectedMod = null) {
   openModal('uploadDocModal');
 }
 
-/* Intelligente Analyse des Dateinamens für Modul, Kategorie & Semesterwoche */
 function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, fallbackWeekLabel) {
   const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[_\-]+/g, ' ');
   const lower = cleanName.toLowerCase();
 
-  // 1. Modul erkennen
   let detectedModule = fallbackModule || appState.modules[0]?.shortName || 'ModSim';
   const modPatterns = [
     { mod: 'ModSim', regex: /\b(modsim|modellierung|simulation|fem|numpy|python|awp|rwp|2-\d{2})\b/i },
@@ -1174,7 +1300,6 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     }
   }
 
-  // 2. Kategorie erkennen (inkl. "Lösungen")
   let detectedCategory = fallbackCategory || 'Vorlesung';
   if (/(lösung|loesung|musterlösung|musterloesung|solution|lös\b|loes\b)/i.test(cleanName)) {
     detectedCategory = 'Lösungen';
@@ -1190,11 +1315,9 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     detectedCategory = 'Vorlesung';
   }
 
-  // 3. Semesterwoche intelligent aus Aufgabenplan ermitteln
   let detectedWeekLabel = fallbackWeekLabel || '';
   let matchReason = 'Standard-Auswahl';
 
-  // Explizite Wochenangabe im Dateinamen (z.B. "Woche 4" oder "W4" oder "KW 5")
   const directWeekMatch = cleanName.match(/\b(?:woche|week|w)\s*(\d{1,2})\b/i);
   if (directWeekMatch) {
     const wNum = parseInt(directWeekMatch[1], 10);
@@ -1204,7 +1327,6 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     }
   }
 
-  // Suche nach Kürzeln wie V1, LE 4, ÜB 3, HSÜ 2, 2-05, Testat 2, Typ C
   if (!detectedWeekLabel || matchReason === 'Standard-Auswahl') {
     const tokenRegex = /\b(v\s*\d+|le\s*\d+|üb\s*\d+|ueb\s*\d+|ü\s*\d+|hsü\s*\d+|hsu\s*\d+|testat\s*\d+|2-\d{2}|typ\s*[a-j])\b/gi;
     const tokens = (cleanName.match(tokenRegex) || []).map(t =>
@@ -1226,7 +1348,6 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
             bestToken = tok.toUpperCase();
           }
         }
-        // Stichwort-Abgleich mit Aufgabentext
         const words = lower.split(/\s+/).filter(w => w.length >= 4 && !['vorlesung', 'übung', 'uebung', 'lösung', 'loesung'].includes(w));
         for (const w of words) {
           if (item.text.toLowerCase().includes(w)) {
@@ -1375,7 +1496,6 @@ async function handleSaveUploadedDocs() {
       const file = plan.file;
       const weekDisplay = plan.weekLabel ? plan.weekLabel : 'Allgemein (ohne feste Woche)';
 
-      // Explizite Bestätigungs-Abfrage für jedes einzelne Dokument vor dem Einsortieren
       const isConfirmed = window.confirm(
         `Dokument ${i + 1} von ${pendingUploadPlans.length}: „${file.name}“\n\n` +
         `Automatische Einsortierung:\n` +
@@ -1550,7 +1670,7 @@ function buildEmailHtmlObject() {
     if (items.length > 0) {
       const itemsHtml = items.map(i => {
         const icon = i.done ? '✅ ' : (i.inProgress ? '⏳ ' : '⬜ ');
-        return `<li>${icon}<strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(i.text)} (Mo, ${formatIsoDateDE(i.dueDate || getWeekMondayDateString(selIdx))})</li>`;
+        return `<li>${icon}<strong>[${escapeHtml(mod.shortName)}]</strong> ${escapeHtml(i.text)}</li>`;
       }).join('');
       upcomingTasksHtml += `
         <div style="margin-bottom: 14px; padding: 12px; background-color: ${lightBg}; border-left: 4px solid ${primaryColor}; border-radius: 6px;">
