@@ -1,6 +1,34 @@
 /* =========================================================
-   INITIAL-DATEN DES SEMESTERPLANS (data.js)
+   UNTERPROGRAMM 1: INITIAL-DATEN, FARBSCHEMATA & KATEGORIEN (data.js)
    ========================================================= */
+const THEMES = {
+  rose:       { label: 'Original Rosa',             colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4' },
+  berry:      { label: 'Berry Velvet',              colors: ['#DB2777', '#831843', '#FDF2F8'], light: '#FCE7F3', border: '#FBCFE8' },
+  mocha:      { label: 'Café Mocha (Cool Taupe)',   colors: ['#6E5D56', '#423532', '#F7F5F4'], light: '#EFECEB', border: '#DDD6D4' },
+  sage:       { label: 'Nordic Sage (Analog)',      colors: ['#5E8C76', '#2E5242', '#F4F8F6'], light: '#EAF2EE', border: '#CFE0D8' },
+  ocean:      { label: 'Aegean Ocean (Kühl)',       colors: ['#3A6EA5', '#1E3A5F', '#F5F8FC'], light: '#EBF2FA', border: '#D0E0F2' },
+  lavender:   { label: 'Provence Lavender',         colors: ['#7E6BC4', '#46357D', '#F8F7FC'], light: '#F1EFFA', border: '#DFD9F2' },
+  terracotta: { label: 'Tuscan Terracotta',         colors: ['#C26D53', '#853F2A', '#FBF7F5'], light: '#F9EFEA', border: '#EEDAD2' },
+  nordic:     { label: 'Nordic Fjord',              colors: ['#3B7A8C', '#1F4854', '#F4F8F9'], light: '#E9F2F5', border: '#CCE0E6' },
+  pearl:      { label: 'Rose Quartz & Pearl',       colors: ['#B57C86', '#6B444C', '#FBF8F9'], light: '#F6EEF0', border: '#E8D8DC' },
+  dark:       { label: 'Midnight Velvet (Dark)',    colors: ['#D97789', '#F3A6B4', '#141216'], light: '#2A2125', border: '#3D2F35' },
+  obsidian:   { label: 'Obsidian Emerald (Dark)',   colors: ['#52A788', '#8CE0C0', '#0E1513'], light: '#192722', border: '#283D35' },
+  cosmos:     { label: 'Nordic Night (Dark)',       colors: ['#5B9BD5', '#93C5FD', '#0B111E'], light: '#1A2636', border: '#2A3B52' },
+  amethyst:   { label: 'Nocturne Plum (Dark)',      colors: ['#9B82F3', '#C4B5FD', '#120F1B'], light: '#241E35', border: '#362D4F' },
+  espresso:   { label: 'Dark Roast (Dark)',         colors: ['#B68F78', '#E2C5B3', '#141110'], light: '#28211E', border: '#3C322D' }
+};
+
+const DOC_CATEGORIES = [
+  { value: 'Vorlesung',                 label: '📖 Vorlesung',                 icon: '📖', chipClass: '' },
+  { value: 'Übung',                     label: '✍️ Übung',                     icon: '✍️', chipClass: '' },
+  { value: 'Lösungen',                  label: '✅ Lösungen',                  icon: '✅', chipClass: 'solution-chip' },
+  { value: 'Hörsaalübung',              label: '🏛️ Hörsaalübung',              icon: '🏛️', chipClass: '' },
+  { value: 'Formelsammlung',            label: '📐 Formelsammlung',            icon: '📐', chipClass: 'formula-chip' },
+  { value: 'Zusatz',                    label: '➕ Zusatz',                    icon: '➕', chipClass: '' },
+  { value: 'Testat / Praktikum',        label: '🔬 Testat / Praktikum',        icon: '🔬', chipClass: '' },
+  { value: 'Klausur / Zusammenfassung', label: '🎓 Klausur / Zusammenfassung', icon: '🎓', chipClass: '' }
+];
+
 const INITIAL_DATA = {
   "modules": [
     {"colIndex": 1, "fullName": "Modellierung und Simulation", "shortName": "ModSim"},

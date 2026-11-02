@@ -1,11 +1,10 @@
 /* =========================================================
-   UNTERPROGRAMM: GOOGLE DRIVE DOKUMENTEN- & SNAPSHOT-SYNC (drive-sync.js)
-   - Eigene "☁️ Drive Sync"-Taste (triggerManualDriveSync)
-   - Lädt direkt NUR neue oder geänderte Dateien hoch
+   UNTERPROGRAMM 7: OPTIMIERTER GOOGLE DRIVE DOKUMENTEN- &
+   SNAPSHOT-SYNC (drive-sync.js)
+   - Nutzt native Binär-Blobs aus IndexedDB statt RAM-Base64
+   - Fortschrittsanzeige pro Datei & saubere Fehlerbehandlung
    - Überschreibt bei 2 Synchronisationsständen automatisch den ältesten
-   - Jederzeit über den Abbrechen-Button (AbortController) abbrechbar
    ========================================================= */
-
 const DRIVE_SYNC_FOLDER_NAME = 'Semesterplan_App_Sync';
 const DRIVE_STATE_SNAPSHOT_PREFIX = 'semesterplan_sync_snapshot';
 
@@ -25,7 +24,7 @@ async function ensureDriveSyncFolder() {
   if (cachedDriveFolderId) return cachedDriveFolderId;
   const q = encodeURIComponent(`name = '${DRIVE_SYNC_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
   const data = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime)&orderBy=createdTime desc`);
-  if (data.files && data.files.length > 0) {
+  if (data && data.files && data.files.length > 0) {
     cachedDriveFolderId = data.files[0].id;
     return cachedDriveFolderId;
   }
@@ -40,29 +39,27 @@ async function ensureDriveSyncFolder() {
   return cachedDriveFolderId;
 }
 
-function dataUrlToBlob(dataUrl, fallbackMime = 'application/octet-stream') {
-  const parts = dataUrl.split(',');
-  const mimeMatch = parts[0].match(/:(.*?);/);
-  const mime = mimeMatch ? mimeMatch[1] : fallbackMime;
-  const bstr = atob(parts[1] || '');
-  let n = bstr.length;
-  const u8arr = new Uint8Array(n);
-  while (n--) {
-    u8arr[n] = bstr.charCodeAt(n);
-  }
-  return new Blob([u8arr], { type: mime });
+function buildDriveAppProperties(docRecord) {
+  const safeSlice = (val, max = 110) => String(val || '').slice(0, max);
+  return {
+    spDocId: safeSlice(docRecord.id, 100),
+    spModule: safeSlice(docRecord.module, 50),
+    spCategory: safeSlice(docRecord.category || 'Vorlesung', 50),
+    spWeekLabel: safeSlice(docRecord.weekLabel, 80),
+    spTaskText: safeSlice(docRecord.taskText, 100),
+    spTitle: safeSlice(docRecord.title, 100),
+    spManualOverride: docRecord.manualOverride ? 'true' : 'false'
+  };
 }
 
 /* =========================================================
-   EINZELNE NEUE DATEI HOCHLADEN ODER ÄLTESTES DUPLIKAT ÜBERSCHREIBEN
+   SPEICHERSCHONENDER BLOB-UPLOAD ZU GOOGLE DRIVE
    ========================================================= */
 async function uploadLocalDocToGoogleDrive(docRecord, existingDriveFiles = null) {
-  if (!googleAccessToken || !docRecord.dataUrl) return false;
-  if (isCurrentActionCancelled()) return false;
+  if (!googleAccessToken || isCurrentActionCancelled()) return false;
 
   const folderId = await ensureDriveSyncFolder();
 
-  // Prüfen, ob in Google Drive bereits Kopien derselben Datei existieren
   let matchingDriveCopies = [];
   if (Array.isArray(existingDriveFiles)) {
     matchingDriveCopies = existingDriveFiles.filter(df =>
@@ -73,55 +70,43 @@ async function uploadLocalDocToGoogleDrive(docRecord, existingDriveFiles = null)
     );
   }
 
-  const appProps = {
-    spDocId: docRecord.id,
-    spModule: docRecord.module || '',
-    spCategory: docRecord.category || 'Vorlesung',
-    spWeekLabel: docRecord.weekLabel || '',
-    spTaskText: docRecord.taskText || '',
-    spTitle: docRecord.title || '',
-    spManualOverride: docRecord.manualOverride ? 'true' : 'false'
-  };
-
-  // Falls 2 (oder mehr) Synchronisations-Kopien derselben Datei existieren:
-  // Sortiere nach Änderungsdatum aufsteigend (älteste zuerst) und überschreibe die älteste!
+  // Bei 2+ Kopien in Drive: Älteste behalten/aktualisieren, Überzählige löschen
   if (matchingDriveCopies.length >= 2) {
     matchingDriveCopies.sort((a, b) => new Date(a.modifiedTime || 0) - new Date(b.modifiedTime || 0));
-    const oldestCopy = matchingDriveCopies[0];
-    docRecord.driveFileId = oldestCopy.id;
-    // Entferne überzählige Kopien, sodass jedes Dokument nur einmal existiert
+    docRecord.driveFileId = matchingDriveCopies[0].id;
+    docRecord.webViewLink = matchingDriveCopies[0].webViewLink || docRecord.webViewLink || '';
     for (let i = 1; i < matchingDriveCopies.length; i++) {
       await deleteDocFromGoogleDrive(matchingDriveCopies[i].id);
     }
   } else if (matchingDriveCopies.length === 1 && !docRecord.driveFileId) {
-    // Datei existiert bereits auf Drive -> Nicht erneut hochladen, nur ID verknüpfen!
     docRecord.driveFileId = matchingDriveCopies[0].id;
     docRecord.webViewLink = matchingDriveCopies[0].webViewLink || '';
     if (docRecord.needsDriveUpdate) {
       await syncSingleDocMetadataToDrive(docRecord);
-      docRecord.needsDriveUpdate = false;
     }
     return false;
   }
 
-  // Wenn die Datei bereits eine driveFileId hat, nur Metadaten aktualisieren statt Datei neu hochzuladen
   if (docRecord.driveFileId) {
     if (docRecord.needsDriveUpdate) {
       await syncSingleDocMetadataToDrive(docRecord);
-      docRecord.needsDriveUpdate = false;
     }
     return false;
   }
 
-  // Komplett neue Datei hochladen
+  // Lade Binär-Blob nur für diese eine Datei direkt aus der IndexedDB
+  const fileBlob = await getDocBlobFromDB(docRecord.id);
+  if (!fileBlob) return false;
+
   const metadata = {
-    name: docRecord.fileName || docRecord.title,
+    name: docRecord.fileName || docRecord.title || 'Dokument.pdf',
     parents: [folderId],
-    appProperties: appProps
+    appProperties: buildDriveAppProperties(docRecord)
   };
+
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', dataUrlToBlob(docRecord.dataUrl, docRecord.mimeType));
+  form.append('file', fileBlob, metadata.name);
 
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
     method: 'POST',
@@ -129,6 +114,11 @@ async function uploadLocalDocToGoogleDrive(docRecord, existingDriveFiles = null)
     body: form,
     signal: getActiveAbortSignal()
   });
+
+  if (res.status === 401) {
+    throw new Error('Google-Sitzung abgelaufen (401). Bitte neu verbinden.');
+  }
+
   if (res.ok) {
     const uploaded = await res.json();
     docRecord.driveFileId = uploaded.id;
@@ -145,21 +135,13 @@ async function syncSingleDocMetadataToDrive(docRecord) {
     await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${docRecord.driveFileId}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        name: docRecord.fileName || docRecord.title,
-        appProperties: {
-          spDocId: docRecord.id,
-          spModule: docRecord.module || '',
-          spCategory: docRecord.category || 'Vorlesung',
-          spWeekLabel: docRecord.weekLabel || '',
-          spTaskText: docRecord.taskText || '',
-          spTitle: docRecord.title || '',
-          spManualOverride: docRecord.manualOverride ? 'true' : 'false'
-        }
+        name: docRecord.fileName || docRecord.title || 'Dokument.pdf',
+        appProperties: buildDriveAppProperties(docRecord)
       })
     });
     docRecord.needsDriveUpdate = false;
   } catch (e) {
-    console.warn('Drive-Metadaten-Update fehlgeschlagen:', e);
+    console.warn('Drive-Metadaten-Update Hinweis:', e);
   }
 }
 
@@ -172,30 +154,28 @@ async function deleteDocFromGoogleDrive(driveFileId) {
   } catch (e) {}
 }
 
+/* Lädt Datei-Inhalt bei Bedarf von Drive direkt als Blob in die IndexedDB (ohne Base64 im RAM!) */
 async function ensureDriveDocContentLoaded(docRecord) {
-  if (docRecord.dataUrl || !docRecord.driveFileId || !googleAccessToken) return;
+  const existingBlob = await getDocBlobFromDB(docRecord.id);
+  if (existingBlob) return existingBlob;
+  if (!docRecord.driveFileId || !googleAccessToken) return null;
+
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${docRecord.driveFileId}?alt=media`, {
     headers: { 'Authorization': `Bearer ${googleAccessToken}` },
     signal: getActiveAbortSignal()
   });
-  if (!response.ok) return;
+  if (!response.ok) return null;
   const blob = await response.blob();
-  const dataUrl = await new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(blob);
-  });
-  docRecord.dataUrl = dataUrl;
-  await putDocRecordInDB(docRecord);
+  docRecord.hasLocalFile = true;
+  await putDocRecordInDB(docRecord, blob);
+  return blob;
 }
 
 /* =========================================================
-   ROTATION VON 2 SYNC-STÄNDEN IN GOOGLE DRIVE:
-   ÜBERSCHREIBT AUTOMATISCH DEN ÄLTESTEN VON 2 SYNCS
+   ROTATION VON 2 SYNC-STÄNDEN IN GOOGLE DRIVE
    ========================================================= */
 async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
   if (!googleAccessToken || !appState || isCurrentActionCancelled()) return;
-
   const snapshots = (existingDriveFiles || [])
     .filter(f => (f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX))
     .sort((a, b) => new Date(a.modifiedTime || 0) - new Date(b.modifiedTime || 0));
@@ -220,7 +200,6 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
 
   const blob = new Blob([JSON.stringify(snapshotPayload)], { type: 'application/json' });
 
-  // Wenn bereits 2 Synchronisations-Snapshots existieren: Überschreibe gezielt den ÄLTESTEN (snapshots[0])!
   if (snapshots.length >= 2) {
     const oldestSnapshot = snapshots[0];
     const form = new FormData();
@@ -228,27 +207,22 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
       name: `${DRIVE_STATE_SNAPSHOT_PREFIX}_${new Date().toISOString().slice(0, 10)}.json`
     })], { type: 'application/json' }));
     form.append('file', blob);
-
     await fetch(`https://www.googleapis.com/upload/drive/v3/files/${oldestSnapshot.id}?uploadType=multipart`, {
       method: 'PATCH',
       headers: { 'Authorization': `Bearer ${googleAccessToken}` },
       body: form,
       signal: getActiveAbortSignal()
     });
-
-    // Falls mehr als 2 alte Snapshots lagen, restliche überzählige aufräumen
     for (let i = 2; i < snapshots.length; i++) {
       await deleteDocFromGoogleDrive(snapshots[i].id);
     }
   } else {
-    // Weniger als 2 Snapshots vorhanden -> Neuen anlegen
     const form = new FormData();
     form.append('metadata', new Blob([JSON.stringify({
       name: `${DRIVE_STATE_SNAPSHOT_PREFIX}_${snapshots.length + 1}.json`,
       parents: [folderId]
     })], { type: 'application/json' }));
     form.append('file', blob);
-
     await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${googleAccessToken}` },
@@ -259,15 +233,14 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
 }
 
 /* =========================================================
-   HAUPTFUNKTION: DRIVE-SYNCHRONISATION (INKREMENTELL)
+   HAUPTFUNKTION: INKREMENTELLE DRIVE-SYNCHRONISATION
    ========================================================= */
 async function syncDocumentsWithGoogleDrive(silent = true) {
   if (!googleAccessToken || isDriveSyncInProgress) return;
   isDriveSyncInProgress = true;
   if (!silent) {
-    startCancelableOperation('Synchronisiere neue Dateien mit Google Drive...');
+    startCancelableOperation('Synchronisiere Dokumente mit Google Drive...');
   }
-
   try {
     const folderId = await ensureDriveSyncFolder();
     if (isCurrentActionCancelled()) return;
@@ -275,28 +248,39 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
     const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
     const fields = encodeURIComponent('files(id,name,mimeType,size,webViewLink,appProperties,createdTime,modifiedTime)');
     const driveData = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=250`);
-    const allDriveFiles = driveData.files || [];
+    const allDriveFiles = (driveData && driveData.files) || [];
     const docDriveFiles = allDriveFiles.filter(f => !(f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX));
 
     let uploadedNewCount = 0;
     let updatedMetaCount = 0;
     let pulledCount = 0;
 
-    // 1. NUR NEUE oder GEÄNDERTE lokale Dateien zu Google Drive übertragen
+    const docsToUpload = cachedDocsList.filter(d => !d.driveFileId && d.hasLocalFile);
+    let currentUploadIdx = 0;
+
+    // 1. Neue oder geänderte lokale Dateien hochladen / aktualisieren
     for (const localDoc of cachedDocsList) {
       if (isCurrentActionCancelled()) break;
-      if (!localDoc.driveFileId && localDoc.dataUrl) {
-        const wasUploaded = await uploadLocalDocToGoogleDrive(localDoc, docDriveFiles);
-        await putDocRecordInDB(localDoc);
-        if (wasUploaded) uploadedNewCount++;
-      } else if (localDoc.driveFileId && localDoc.needsDriveUpdate) {
-        await syncSingleDocMetadataToDrive(localDoc);
-        await putDocRecordInDB(localDoc);
-        updatedMetaCount++;
+      try {
+        if (!localDoc.driveFileId && localDoc.hasLocalFile) {
+          currentUploadIdx++;
+          if (!silent && typeof updateLoadingText === 'function') {
+            updateLoadingText(`Lade Datei ${currentUploadIdx}/${docsToUpload.length} hoch (${localDoc.fileName})...`);
+          }
+          const wasUploaded = await uploadLocalDocToGoogleDrive(localDoc, docDriveFiles);
+          await putDocRecordInDB(localDoc);
+          if (wasUploaded) uploadedNewCount++;
+        } else if (localDoc.driveFileId && localDoc.needsDriveUpdate) {
+          await syncSingleDocMetadataToDrive(localDoc);
+          await putDocRecordInDB(localDoc);
+          updatedMetaCount++;
+        }
+      } catch (singleErr) {
+        console.warn('Einzeldatei-Sync übersprungen:', singleErr);
       }
     }
 
-    // 2. Vom anderen Gerät (z. B. Laptop -> Handy) neu hinzugekommene oder umgeordnete Dateien abrufen
+    // 2. Auf anderen Geräten hinzugefügte oder umgeordnete Drive-Dateien abgleichen
     for (const df of docDriveFiles) {
       if (isCurrentActionCancelled()) break;
       const props = df.appProperties || {};
@@ -312,20 +296,17 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
           existingLocal.webViewLink = df.webViewLink || '';
           await putDocRecordInDB(existingLocal);
         }
-        // Falls auf dem anderen Gerät die Zuordnung manuell geändert wurde, übernehmen
         if (props.spManualOverride === 'true' && !existingLocal.needsDriveUpdate) {
-          const changed =
-            existingLocal.module !== (props.spModule || existingLocal.module) ||
-            existingLocal.category !== (props.spCategory || existingLocal.category) ||
-            (existingLocal.weekLabel || '') !== (props.spWeekLabel || '') ||
-            (existingLocal.taskText || '') !== (props.spTaskText || '');
-          if (changed) {
+          const remoteTime = df.modifiedTime ? new Date(df.modifiedTime).getTime() : 0;
+          const localTime = existingLocal.updatedAt || existingLocal.uploadedAt || 0;
+          if (remoteTime > localTime + 2000) {
             existingLocal.module = props.spModule || existingLocal.module;
             existingLocal.category = props.spCategory || existingLocal.category;
-            existingLocal.weekLabel = props.spWeekLabel || '';
-            existingLocal.taskText = props.spTaskText || '';
+            existingLocal.weekLabel = props.spWeekLabel !== undefined ? props.spWeekLabel : existingLocal.weekLabel;
+            existingLocal.taskText = props.spTaskText !== undefined ? props.spTaskText : existingLocal.taskText;
             existingLocal.title = props.spTitle || existingLocal.title;
             existingLocal.manualOverride = true;
+            existingLocal.updatedAt = remoteTime;
             await putDocRecordInDB(existingLocal);
             updatedMetaCount++;
           }
@@ -342,28 +323,26 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
         category: props.spCategory || guess.category,
         weekLabel: props.spWeekLabel !== undefined ? props.spWeekLabel : guess.weekLabel,
         taskText: props.spTaskText !== undefined ? props.spTaskText : guess.taskText,
-        title: props.spTitle || (guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, df.name) : df.name),
+        title: props.spTitle || (guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, df.name) : df.name.replace(/\.[^/.]+$/, '')),
         fileName: df.name,
         mimeType: df.mimeType || 'application/pdf',
         sizeBytes: Number(df.size) || 0,
-        dataUrl: '',
+        hasLocalFile: false,
         manualOverride: props.spManualOverride === 'true',
         uploadedAt: df.createdTime ? new Date(df.createdTime).getTime() : Date.now(),
         updatedAt: df.modifiedTime ? new Date(df.modifiedTime).getTime() : Date.now()
       };
       await putDocRecordInDB(newDoc);
-      cachedDocsList.push(newDoc);
       pulledCount++;
     }
 
-    // 3. Synchronisations-Snapshot sichern (überschreibt automatisch den ältesten von 2 Ständen)
     if (!isCurrentActionCancelled()) {
       await saveSyncSnapshotOverwriteOldest(folderId, allDriveFiles);
     }
 
     if (uploadedNewCount > 0 || pulledCount > 0 || updatedMetaCount > 0) {
       await refreshDocsCache();
-      renderAll();
+      if (typeof renderAll === 'function') renderAll();
     }
 
     if (!silent && !isCurrentActionCancelled()) {
@@ -397,7 +376,6 @@ async function loadGoogleDriveFilesList() {
   const listContainer = document.getElementById('googleDriveFilesList');
   const queryText = (document.getElementById('driveSearchInput')?.value || '').trim();
   if (!listContainer) return;
-
   startCancelableOperation('Durchsuche dein Google Drive...');
   try {
     let q = `mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
@@ -407,13 +385,11 @@ async function loadGoogleDriveFilesList() {
     }
     const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('files(id,name,mimeType,size,webViewLink,modifiedTime)')}&pageSize=40&orderBy=modifiedTime desc`;
     const data = await googleApiFetch(url);
-    const files = (data.files || []).filter(f => !(f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX));
-
+    const files = ((data && data.files) || []).filter(f => !(f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX));
     if (files.length === 0) {
       listContainer.innerHTML = `<p style="text-align:center; padding:20px; color:var(--text-muted);">Keine passenden Dateien in deinem Google Drive gefunden.</p>`;
       return;
     }
-
     listContainer.innerHTML = files.map(f => {
       const alreadyAdded = cachedDocsList.some(d => d.driveFileId === f.id);
       return `
@@ -454,7 +430,6 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
     const fallbackCat = document.getElementById('docCategorySelect')?.value || '';
     const fallbackWeek = document.getElementById('docWeekSelect')?.value || '';
     const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek);
-
     const newDoc = {
       id: `doc_drive_${driveId}`,
       driveFileId: driveId,
@@ -467,19 +442,17 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
       fileName: fileName,
       mimeType: mimeType || 'application/pdf',
       sizeBytes: sizeBytes || 0,
-      dataUrl: '',
+      hasLocalFile: false,
       manualOverride: true,
       uploadedAt: Date.now(),
       updatedAt: Date.now()
     };
-
     try {
       await ensureDriveDocContentLoaded(newDoc);
     } catch (e) {}
-
     await putDocRecordInDB(newDoc);
     await refreshDocsCache();
-    renderAll();
+    if (typeof renderAll === 'function') renderAll();
     await loadGoogleDriveFilesList();
     showToast(`✅ „${newDoc.title}“ zugeordnet (${newDoc.module})!`);
   } finally {

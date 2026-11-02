@@ -1,34 +1,9 @@
 /* =========================================================
-   HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
-   - Stilles Offline-Backup im Hintergrund bei jeder Änderung
-   - Dokumente ohne Wochenbezug oben unter dem jeweiligen Modulnamen
-   - Drag & Drop von Aufgaben UND von Dokumenten direkt auf Aufgaben
-   - Mobiler Umschalter zwischen Kompakt- (wie Querformat) & Listen-Ansicht
+   UNTERPROGRAMM 6: HAUPTSTEUERUNG, LAZY-RENDERING, DIREKTE
+   SPEICHER-NAVIGATION, DRAG & DROP, E-MAIL & PDF (app.js)
    ========================================================= */
-const STORAGE_KEY = 'semesterplan_app_state_v3';
-const THEME_KEY = 'semesterplan_theme';
-
-const THEMES = {
-  rose:       { label: 'Original Rosa',             colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4' },
-  berry:      { label: 'Berry Velvet',              colors: ['#DB2777', '#831843', '#FDF2F8'], light: '#FCE7F3', border: '#FBCFE8' },
-  mocha:      { label: 'Café Mocha (Cool Taupe)',   colors: ['#6E5D56', '#423532', '#F7F5F4'], light: '#EFECEB', border: '#DDD6D4' },
-  sage:       { label: 'Nordic Sage (Analog)',      colors: ['#5E8C76', '#2E5242', '#F4F8F6'], light: '#EAF2EE', border: '#CFE0D8' },
-  ocean:      { label: 'Aegean Ocean (Kühl)',       colors: ['#3A6EA5', '#1E3A5F', '#F5F8FC'], light: '#EBF2FA', border: '#D0E0F2' },
-  lavender:   { label: 'Provence Lavender',         colors: ['#7E6BC4', '#46357D', '#F8F7FC'], light: '#F1EFFA', border: '#DFD9F2' },
-  terracotta: { label: 'Tuscan Terracotta',         colors: ['#C26D53', '#853F2A', '#FBF7F5'], light: '#F9EFEA', border: '#EEDAD2' },
-  nordic:     { label: 'Nordic Fjord',              colors: ['#3B7A8C', '#1F4854', '#F4F8F9'], light: '#E9F2F5', border: '#CCE0E6' },
-  pearl:      { label: 'Rose Quartz & Pearl',       colors: ['#B57C86', '#6B444C', '#FBF8F9'], light: '#F6EEF0', border: '#E8D8DC' },
-  dark:       { label: 'Midnight Velvet (Dark)',    colors: ['#D97789', '#F3A6B4', '#141216'], light: '#2A2125', border: '#3D2F35' },
-  obsidian:   { label: 'Obsidian Emerald (Dark)',   colors: ['#52A788', '#8CE0C0', '#0E1513'], light: '#192722', border: '#283D35' },
-  cosmos:     { label: 'Nordic Night (Dark)',       colors: ['#5B9BD5', '#93C5FD', '#0B111E'], light: '#1A2636', border: '#2A3B52' },
-  amethyst:   { label: 'Nocturne Plum (Dark)',      colors: ['#9B82F3', '#C4B5FD', '#120F1B'], light: '#241E35', border: '#362D4F' },
-  espresso:   { label: 'Dark Roast (Dark)',         colors: ['#B68F78', '#E2C5B3', '#141110'], light: '#28211E', border: '#3C322D' }
-};
-
-let appState = null;
-let activeModuleFilter = null;
-let currentTab = 'table';
 let draggedTaskInfo = null;
+let searchDebounceTimer = null;
 
 async function initApp() {
   showLoading('Lade Semesterplan & Dokumente...');
@@ -46,7 +21,6 @@ async function initApp() {
     populateFocusWeekDropdown();
     populateDocsFilterDropdowns();
     selectCurrentCalendarWeek(false);
-
     await refreshDocsCache();
     renderAll();
 
@@ -59,83 +33,91 @@ async function initApp() {
       if (!e.target.closest('.task-menu-wrapper')) {
         closeAllTaskActionMenus();
       }
+      if (!e.target.closest('.doc-menu-wrapper')) {
+        if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
+      }
     });
   } finally {
     hideLoading();
   }
 }
 
-function stripModuleBracketsFromText(text, shortName = '') {
-  let cleaned = String(text ?? '').trim();
-  if (shortName) {
-    cleaned = cleaned.replace(new RegExp(`^\\[\\s*${shortName}\\s*\\]\\s*:?\\s*`, 'i'), '');
-  }
-  return cleaned.replace(/^\[[^\]]+\]\s*:?\s*/, '').trim();
+function debouncedRenderAll() {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    renderAll();
+  }, 160);
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (
-        parsed &&
-        Array.isArray(parsed.modules) &&
-        Array.isArray(parsed.weeks) &&
-        parsed.weeks.length > 0 &&
-        parsed.weeks[0].cells
-      ) {
-        appState = parsed;
-        if (!Array.isArray(appState.deletedGoogleTaskIds)) {
-          appState.deletedGoogleTaskIds = [];
-        }
-        for (const week of appState.weeks) {
-          for (const mod of appState.modules) {
-            const list = week.cells[mod.shortName] || [];
-            list.forEach(item => {
-              item.text = stripModuleBracketsFromText(item.text, mod.shortName);
-            });
-          }
-        }
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('Konnte gespeicherten Status nicht laden, prüfe Hintergrund-Backup:', e);
+/* =========================================================
+   1. TAB-WECHSEL & DIREKTE SPEICHER-WEITERLEITUNG
+      (Blende obere Modul-Karten im Speicher-Modus komplett aus!)
+   ========================================================= */
+function switchTab(tabName) {
+  currentTab = tabName;
+  const isDocsView = (tabName === 'docs');
+
+  document.getElementById('viewTable')?.classList.toggle('hidden', tabName !== 'table');
+  document.getElementById('viewFocus')?.classList.toggle('hidden', tabName !== 'focus');
+  document.getElementById('viewDocs')?.classList.toggle('hidden', tabName !== 'docs');
+  document.getElementById('viewEmail')?.classList.toggle('hidden', tabName !== 'email');
+  document.getElementById('tableFilters')?.classList.toggle('hidden', tabName !== 'table');
+
+  // Wenn man auf "Speicher" drückt: Obere Übersicht ausblenden und direkt zum Speicher leiten!
+  document.getElementById('dashboardCards')?.classList.toggle('hidden', isDocsView);
+  document.getElementById('topIntegrationStrip')?.classList.toggle('hidden', isDocsView);
+  const mobileBanner = document.getElementById('mobileCurrentWeekBanner');
+  if (mobileBanner) {
+    mobileBanner.style.display = (tabName === 'table') ? '' : 'none';
   }
 
-  // Automatischer Rückgriff auf das stille Hintergrund-Backup, falls vorhanden
-  if (typeof restoreSilentBackgroundBackupIfNeeded === 'function') {
-    const restored = restoreSilentBackgroundBackupIfNeeded();
-    if (restored) {
-      appState = restored;
-      return;
-    }
-  }
+  ['table', 'focus', 'docs', 'email'].forEach(t => {
+    const cap = t.charAt(0).toUpperCase() + t.slice(1);
+    document.getElementById(`tabBtn${cap}`)?.classList.toggle('active', tabName === t);
+    document.getElementById(`iosTab${cap}`)?.classList.toggle('active', tabName === t);
+    document.getElementById(`drawerTab${cap}`)?.classList.toggle('active', tabName === t);
+  });
 
-  if (typeof INITIAL_DATA === 'undefined') {
-    appState = { modules: [], weeks: [], deletedGoogleTaskIds: [] };
-    return;
+  renderAll();
+
+  if (isDocsView) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
-  appState = JSON.parse(JSON.stringify(INITIAL_DATA));
-  appState.deletedGoogleTaskIds = [];
-  saveState();
 }
 
-function saveState() {
-  try {
-    appState.lastUpdated = Date.now();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-    if (typeof saveSilentBackgroundBackup === 'function') {
-      saveSilentBackgroundBackup(appState);
-    }
-  } catch (e) {
-    console.error('Fehler beim Speichern im localStorage:', e);
+function openModuleDocsDirectly(shortName, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  const sel = document.getElementById('docsModuleFilter');
+  if (sel) sel.value = shortName;
+  switchTab('docs');
+}
+
+function setModuleFilter(shortName) {
+  activeModuleFilter = (activeModuleFilter === shortName) ? null : shortName;
+  const clearBtn = document.getElementById('clearModuleFilterBtn');
+  if (clearBtn) {
+    clearBtn.style.display = activeModuleFilter ? 'inline-flex' : 'none';
+  }
+  if (currentTab !== 'table') {
+    switchTab('table');
+  } else {
+    renderAll();
+  }
+}
+
+function populateDocsFilterDropdowns() {
+  const filterMod = document.getElementById('docsModuleFilter');
+  if (filterMod && appState?.modules) {
+    filterMod.innerHTML = `<option value="all">Alle Module anzeigen</option>` +
+      appState.modules.map(m => `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`).join('');
   }
 }
 
 /* =========================================================
-   3-PUNKTE-MENÜ (⋮) FÜR AUFGABEN-AKTIONEN
+   2. DREI-PUNKTE-MENÜ (⋮) FÜR AUFGABEN
    ========================================================= */
 function closeAllTaskActionMenus() {
   document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
@@ -147,6 +129,7 @@ function toggleTaskActionMenu(event, menuId) {
   const menu = document.getElementById(menuId);
   if (!menu) return;
   const isAlreadyOpen = menu.classList.contains('open');
+  if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
   closeAllTaskActionMenus();
   if (!isAlreadyOpen) {
     menu.classList.add('open');
@@ -185,254 +168,23 @@ function buildTaskActionMenuHtml(wIdx, shortName, idx, item, prefix = 'tbl') {
 }
 
 /* =========================================================
-   SEITEN-MENÜLEISTE, THEMES & QUERFORMAT-ANSICHT
-   ========================================================= */
-function toggleSideDrawer() {
-  const drawer = document.getElementById('sideMenuDrawer');
-  const backdrop = document.getElementById('sideDrawerBackdrop');
-  if (!drawer || !backdrop) return;
-  const isOpen = drawer.classList.toggle('open');
-  backdrop.classList.toggle('open', isOpen);
-}
-
-function closeSideDrawer() {
-  document.getElementById('sideMenuDrawer')?.classList.remove('open');
-  document.getElementById('sideDrawerBackdrop')?.classList.remove('open');
-}
-
-function buildThemeMenuUI() {
-  const html = Object.entries(THEMES).map(([key, t]) => `
-    <button type="button" class="theme-option-item" data-theme-key="${key}" onclick="changeTheme('${key}', true)">
-      <span class="theme-preview-dots">
-        <span class="dot" style="background:${t.colors[0]}"></span>
-        <span class="dot" style="background:${t.colors[1]}"></span>
-        <span class="dot" style="background:${t.colors[2]}"></span>
-      </span>
-      <span class="theme-option-label">${escapeHtml(t.label)}</span>
-    </button>
-  `).join('');
-  const menu = document.getElementById('themeMenu');
-  if (menu) menu.innerHTML = html;
-  const drawerList = document.getElementById('drawerThemeList');
-  if (drawerList) drawerList.innerHTML = html;
-}
-
-function toggleThemeMenu(event) {
-  event.stopPropagation();
-  document.getElementById('themeMenu')?.classList.toggle('hidden');
-}
-
-function changeTheme(themeName, showNotification = true) {
-  const themeKey = THEMES[themeName] ? themeName : 'rose';
-  const themeObj = THEMES[themeKey];
-  document.documentElement.setAttribute('data-theme', themeKey);
-  localStorage.setItem(THEME_KEY, themeKey);
-  const dotsEl = document.getElementById('currentThemeDots');
-  const labelEl = document.getElementById('currentThemeLabel');
-  if (dotsEl) {
-    dotsEl.innerHTML = `
-      <span class="dot" style="background:${themeObj.colors[0]}"></span>
-      <span class="dot" style="background:${themeObj.colors[1]}"></span>
-      <span class="dot" style="background:${themeObj.colors[2]}"></span>
-    `;
-  }
-  if (labelEl) labelEl.textContent = themeObj.label;
-  document.querySelectorAll('.theme-option-item').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-theme-key') === themeKey);
-  });
-  document.getElementById('themeMenu')?.classList.add('hidden');
-  renderEmailPreview();
-  if (showNotification) {
-    showToast(`🎨 Farbdesign „${themeObj.label}“ aktiviert!`);
-  }
-}
-
-function toggleIphoneView() {
-  const isIphone = document.body.classList.toggle('iphone-view-mode');
-  if (!isIphone) document.body.classList.remove('landscape-mode');
-  localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
-  updateIphoneBtnState();
-  showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
-}
-
-function toggleLandscapePreview() {
-  if (!document.body.classList.contains('iphone-view-mode')) {
-    document.body.classList.add('iphone-view-mode');
-  }
-  const isLand = document.body.classList.toggle('landscape-mode');
-  updateIphoneBtnState();
-  showToast(isLand ? '🔄 Handy-Querformat (Landscape) aktiviert!' : '📱 Handy-Hochformat (Portrait) aktiviert!');
-}
-
-function updateIphoneBtnState() {
-  const btn = document.getElementById('iphoneViewBtn');
-  const landBtn = document.getElementById('landscapeToggleBtn');
-  const isIphone = document.body.classList.contains('iphone-view-mode');
-  const isLand = document.body.classList.contains('landscape-mode');
-  if (btn) btn.textContent = isIphone ? '💻 Desktop-Ansicht' : '📱 Handy-Ansicht';
-  if (landBtn) {
-    landBtn.classList.toggle('hidden', !isIphone);
-    landBtn.textContent = isLand ? '📱 Hochformat' : '🔄 Querformat';
-  }
-}
-
-function switchTab(tabName) {
-  currentTab = tabName;
-  document.getElementById('viewTable')?.classList.toggle('hidden', tabName !== 'table');
-  document.getElementById('viewFocus')?.classList.toggle('hidden', tabName !== 'focus');
-  document.getElementById('viewDocs')?.classList.toggle('hidden', tabName !== 'docs');
-  document.getElementById('viewEmail')?.classList.toggle('hidden', tabName !== 'email');
-  document.getElementById('tableFilters')?.classList.toggle('hidden', tabName !== 'table');
-  ['table', 'focus', 'docs', 'email'].forEach(t => {
-    const cap = t.charAt(0).toUpperCase() + t.slice(1);
-    document.getElementById(`tabBtn${cap}`)?.classList.toggle('active', tabName === t);
-    document.getElementById(`iosTab${cap}`)?.classList.toggle('active', tabName === t);
-    document.getElementById(`drawerTab${cap}`)?.classList.toggle('active', tabName === t);
-  });
-  renderAll();
-}
-
-function setModuleFilter(shortName) {
-  activeModuleFilter = (activeModuleFilter === shortName) ? null : shortName;
-  const clearBtn = document.getElementById('clearModuleFilterBtn');
-  if (clearBtn) {
-    clearBtn.style.display = activeModuleFilter ? 'inline-flex' : 'none';
-  }
-  renderAll();
-}
-
-function openModuleDocsDirectly(shortName, event) {
-  if (event) event.stopPropagation();
-  const sel = document.getElementById('docsModuleFilter');
-  if (sel) sel.value = shortName;
-  switchTab('docs');
-}
-
-function populateDocsFilterDropdowns() {
-  const filterMod = document.getElementById('docsModuleFilter');
-  if (filterMod) {
-    filterMod.innerHTML = `<option value="all">Alle Module anzeigen</option>` +
-      appState.modules.map(m => `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`).join('');
-  }
-}
-
-/* =========================================================
-   DATUM-HILFSFUNKTIONEN
-   ========================================================= */
-function parseWeekDates(weekLabel) {
-  if (!weekLabel) return null;
-  const regex = /(\d{2})\.(\d{2})\.(?:(\d{4}))?\s*[–\-]\s*(\d{2})\.(\d{2})\.(\d{4})/;
-  const match = weekLabel.match(regex);
-  if (!match) return null;
-  const d1 = parseInt(match[1], 10);
-  const m1 = parseInt(match[2], 10) - 1;
-  const d2 = parseInt(match[4], 10);
-  const m2 = parseInt(match[5], 10) - 1;
-  const y2 = parseInt(match[6], 10);
-  const y1 = match[3] ? parseInt(match[3], 10) : (m1 > m2 ? y2 - 1 : y2);
-  const weekMon = new Date(y1, m1, d1, 0, 0, 0, 0);
-  const weekSun = new Date(y2, m2, d2, 23, 59, 59, 999);
-  return { weekMon, weekSun };
-}
-
-function getWeekMondayDateString(weekIdx) {
-  const week = appState.weeks[weekIdx];
-  if (!week) return new Date().toISOString().slice(0, 10);
-  const parsed = parseWeekDates(week.weekLabel);
-  if (!parsed) return new Date().toISOString().slice(0, 10);
-  const y = parsed.weekMon.getFullYear();
-  const m = String(parsed.weekMon.getMonth() + 1).padStart(2, '0');
-  const d = String(parsed.weekMon.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function getWeekShortName(weekIdx) {
-  const week = appState.weeks[weekIdx];
-  if (!week) return 'Woche';
-  return week.weekLabel.split('\n')[0].trim();
-}
-
-function formatDateDE(dateObj) {
-  if (!dateObj || isNaN(dateObj.getTime())) return '';
-  const d = String(dateObj.getDate()).padStart(2, '0');
-  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const y = dateObj.getFullYear();
-  return `${d}.${m}.${y}`;
-}
-
-function formatIsoDateDE(isoStr) {
-  if (!isoStr) return '';
-  const parts = isoStr.split('-');
-  if (parts.length !== 3) return isoStr;
-  return `${parts[2]}.${parts[1]}.${parts[0]}`;
-}
-
-function findWeekIndexByDate(dateObj) {
-  if (!dateObj || isNaN(dateObj.getTime())) return -1;
-  const t = dateObj.getTime();
-  for (let i = 0; i < appState.weeks.length; i++) {
-    const parsed = parseWeekDates(appState.weeks[i].weekLabel);
-    if (parsed && t >= parsed.weekMon.getTime() && t <= parsed.weekSun.getTime()) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/* =========================================================
-   STATISTIK & FORTSCHRITTSBERECHNUNG
-   ========================================================= */
-function calculateStats() {
-  const moduleStats = {};
-  let overallTotal = 0;
-  let overallCompleted = 0;
-  let overallInProgress = 0;
-  for (const mod of appState.modules) {
-    moduleStats[mod.shortName] = {
-      shortName: mod.shortName,
-      fullName: mod.fullName,
-      total: 0,
-      completed: 0,
-      inProgress: 0,
-      pct: 0,
-      docCount: cachedDocsList.filter(d => d.module === mod.shortName).length
-    };
-  }
-  for (const week of appState.weeks) {
-    for (const mod of appState.modules) {
-      const items = week.cells[mod.shortName] || [];
-      for (const item of items) {
-        moduleStats[mod.shortName].total++;
-        overallTotal++;
-        if (item.done) {
-          moduleStats[mod.shortName].completed++;
-          overallCompleted++;
-        } else if (item.inProgress) {
-          moduleStats[mod.shortName].inProgress++;
-          overallInProgress++;
-        }
-      }
-    }
-  }
-  for (const mod of appState.modules) {
-    const s = moduleStats[mod.shortName];
-    s.pct = s.total > 0 ? Math.round((s.completed / s.total) * 100) : 0;
-  }
-  const overallPct = overallTotal > 0 ? Math.round((overallCompleted / overallTotal) * 100) : 0;
-  return { moduleStats, overallTotal, overallCompleted, overallInProgress, overallPct };
-}
-
-/* =========================================================
-   RENDERING: DASHBOARD, TABELLE & BANNER
+   3. SPEICHERSCHONENDES LAZY-RENDERING (NUR AKTIVER TAB)
    ========================================================= */
 function renderAll() {
   if (!appState) return;
   const stats = calculateStats();
-  renderDashboard(stats);
-  renderTable(stats);
-  renderFocusView();
-  renderModuleDocsView();
-  renderEmailPreview();
+  if (currentTab !== 'docs') {
+    renderDashboard(stats);
+  }
+  if (currentTab === 'table') {
+    renderTable(stats);
+  } else if (currentTab === 'focus') {
+    renderFocusView();
+  } else if (currentTab === 'docs') {
+    renderModuleDocsView();
+  } else if (currentTab === 'email') {
+    renderEmailPreview();
+  }
 }
 
 function renderDashboard(stats) {
@@ -478,14 +230,15 @@ function ensureMobileCurrentWeekBanner(currentWeekIdx) {
     banner.className = 'mobile-current-week-banner no-print';
     viewTable.parentElement.insertBefore(banner, viewTable);
   }
+  banner.style.display = (currentTab === 'table') ? '' : 'none';
   const idx = currentWeekIdx !== -1 ? currentWeekIdx : 0;
   const week = appState.weeks[idx];
-  const isCompact = (localStorage.getItem('semesterplan_mobile_layout_style') || 'compact') === 'compact';
-  const layoutBtnLabel = isCompact ? '📋 Listen-Ansicht' : '📐 Kompakt-Ansicht';
+  const isCompact = (localStorage.getItem(MOBILE_LAYOUT_KEY) || 'compact') === 'compact';
+  const layoutBtnLabel = isCompact ? '📋 Zu Liste' : '📐 Zu Kompakt';
   if (week) {
     const oneLine = week.weekLabel.replace(/\n/g, ' ');
     banner.innerHTML = `
-      <span>📍 Aktuell: ${escapeHtml(oneLine)}</span>
+      <span>📍 ${escapeHtml(oneLine)}</span>
       <div style="display:flex; gap:6px; align-items:center;">
         <button type="button" class="btn btn-header btn-sm" id="mobileBannerLayoutBtn" onclick="toggleMobileLayoutStyle()">${layoutBtnLabel}</button>
         <button type="button" class="btn btn-header btn-sm" onclick="triggerManualDriveSync()">☁️ Sync</button>
@@ -504,6 +257,7 @@ function renderTable(stats) {
     ? appState.modules.filter(m => m.shortName === activeModuleFilter)
     : appState.modules;
 
+  // Kopfzeile inkl. Drag & Drop für Allgemeine Modul-Unterlagen direkt auf die Spalte!
   thead.innerHTML = `
     <tr>
       <th>Semesterwoche</th>
@@ -511,7 +265,14 @@ function renderTable(stats) {
     </tr>
     <tr class="general-docs-row">
       <td>📌 Allgemeine Modul-Unterlagen<br><small style="font-weight:500; opacity:0.8;">(Formelsammlung &amp; Allgemein)</small></td>
-      ${visibleModules.map(m => `<td data-module="${escapeAttr(m.shortName + ' (Allgemein)')}">${renderGeneralModuleDocsCellHtml(m.shortName)}</td>`).join('')}
+      ${visibleModules.map(m => `
+        <td data-module="${escapeAttr(m.shortName + ' (Allgemein)')}"
+            ondragover="handleCellDragOver(event)"
+            ondragleave="handleCellDragLeave(event)"
+            ondrop="handleGeneralCellDrop(event, '${escapeAttr(m.shortName)}')">
+          ${renderGeneralModuleDocsCellHtml(m.shortName)}
+        </td>
+      `).join('')}
     </tr>
   `;
 
@@ -550,6 +311,7 @@ function renderTable(stats) {
       if (filteredItems.length === 0) {
         const remainingDocs = getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds);
         const remainingDocsHtml = renderUnassignedWeekDocsHtml(remainingDocs);
+        if (remainingDocs.length > 0) rowHasMatch = true;
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
             <span class="empty-dash">–</span>
@@ -564,7 +326,6 @@ function renderTable(stats) {
           const badgeHtml = isTestat ? `<span class="testat-tag">TESTAT</span>` : '';
           const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
           const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
-
           const taskDocs = getDocsForTask(wIdx, mod.shortName, cleanItemText);
           taskDocs.forEach(d => shownDocIds.add(d.id));
           const folderKey = `tbl_${wIdx}_${mod.shortName.replace(/\s+/g, '')}_${idx}`;
@@ -622,6 +383,7 @@ function renderTable(stats) {
   });
 
   tbody.innerHTML = rowsHtml || `<tr><td colspan="${visibleModules.length + 1}" style="text-align:center; padding: 24px;">Keine passenden Aufgaben für diesen Filter gefunden.</td></tr>`;
+
   tfoot.innerHTML = `
     <tr class="summary-quote-row">
       <td>📊 Lernfortschritt (%)</td>
@@ -647,10 +409,12 @@ function renderTable(stats) {
 }
 
 /* =========================================================
-   DRAG & DROP (AUFGABEN VERSCHIEBEN + DOKUMENTE AUF AUFGABEN ZIEHEN)
+   4. DRAG & DROP IN SPALTEN & AUF AUFGABEN
+      (INKL. DOKUMENTE, GANZE ORDNER & PC-DATEIEN)
    ========================================================= */
 function handleTaskDragStart(event, weekIdx, shortName, itemIdx) {
   draggedDocId = null;
+  draggedDocFolderGroup = null;
   draggedTaskInfo = { weekIdx, shortName, itemIdx };
   event.currentTarget.classList.add('dragging');
   event.dataTransfer.effectAllowed = 'move';
@@ -677,7 +441,7 @@ function handleCellDragLeave(event) {
 function handleTaskDragOverItem(event) {
   event.preventDefault();
   event.stopPropagation();
-  if (draggedDocId) {
+  if (draggedDocId || draggedDocFolderGroup || (event.dataTransfer?.types && event.dataTransfer.types.includes('Files'))) {
     event.currentTarget.classList.add('doc-drop-target');
   } else {
     event.currentTarget.classList.add('drag-over-item');
@@ -693,7 +457,27 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
   event.stopPropagation();
   event.currentTarget.classList.remove('drag-over-item', 'doc-drop-target');
 
+  const week = appState.weeks[targetWeekIdx];
+  const taskItem = week?.cells?.[targetMod]?.[targetItemIdx];
+  const cleanTask = taskItem ? stripModuleBracketsFromText(taskItem.text, targetMod) : '';
+
+  // Fall 1: Externe Dateien vom PC/iPad direkt auf eine Aufgabe gezogen
+  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0 && week) {
+    await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, cleanTask);
+    return;
+  }
+
   const rawData = event.dataTransfer?.getData('text/plain') || '';
+
+  // Fall 2: Ganzer Dokumenten-Ordner auf eine Aufgabe gezogen
+  if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
+    const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
+    draggedDocFolderGroup = null;
+    await assignDocToTaskByDragDrop(ids, targetWeekIdx, targetMod, targetItemIdx);
+    return;
+  }
+
+  // Fall 3: Einzelnes Dokument auf eine Aufgabe gezogen
   if (draggedDocId || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
     draggedDocId = null;
@@ -701,41 +485,44 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
     return;
   }
 
+  // Fall 4: Aufgabe umsortieren
   await executeTaskMove(targetWeekIdx, targetMod, targetItemIdx);
 }
 
 async function handleCellDrop(event, targetWeekIdx, targetMod) {
   event.preventDefault();
   event.currentTarget.classList.remove('drag-over-cell');
+  const week = appState.weeks[targetWeekIdx];
+  if (!week) return;
 
-  const rawData = event.dataTransfer?.getData('text/plain') || '';
-  if (draggedDocId || rawData.startsWith('DOC:')) {
-    const docId = draggedDocId || rawData.replace('DOC:', '');
-    draggedDocId = null;
-    const doc = cachedDocsList.find(d => d.id === docId);
-    const week = appState.weeks[targetWeekIdx];
-    if (doc && week) {
-      doc.module = targetMod;
-      doc.weekLabel = week.weekLabel.replace(/\n/g, ' ');
-      doc.manualOverride = true;
-      doc.needsDriveUpdate = true;
-      doc.updatedAt = Date.now();
-      const tasks = week.cells[targetMod] || [];
-      if (tasks.length === 1) {
-        doc.taskText = stripModuleBracketsFromText(tasks[0].text, targetMod);
-        await recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
-      } else {
-        doc.taskText = '';
-      }
-      await putDocRecordInDB(doc);
-      await refreshDocsCache();
-      renderAll();
-      showToast(`📁 Dokument in ${targetMod} (${getWeekShortName(targetWeekIdx)}) abgelegt.`);
-    }
+  // Fall 1: Externe Dateien direkt in die Spalte/Zelle gezogen (ohne spezielle Aufgabe!)
+  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
+    await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, '');
     return;
   }
 
-  const targetList = appState.weeks[targetWeekIdx]?.cells[targetMod] || [];
+  const rawData = event.dataTransfer?.getData('text/plain') || '';
+
+  // Fall 2: Ganzer Dokumenten-Ordner direkt in die Spalte/Zelle gezogen
+  if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
+    const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
+    draggedDocFolderGroup = null;
+    await assignDocIdsToTarget(ids, targetMod, week.weekLabel, '');
+    showToast(`📂 Ordner (${ids.length} Dateien) in ${targetMod} (${getWeekShortName(targetWeekIdx)}) abgelegt!`);
+    return;
+  }
+
+  // Fall 3: Einzelnes Dokument direkt in die Spalte/Zelle gezogen (auch ohne Aufgabe möglich!)
+  if (draggedDocId || rawData.startsWith('DOC:')) {
+    const docId = draggedDocId || rawData.replace('DOC:', '');
+    draggedDocId = null;
+    await assignDocIdsToTarget([docId], targetMod, week.weekLabel, '');
+    showToast(`📁 Dokument in Spalte ${targetMod} (${getWeekShortName(targetWeekIdx)}) abgelegt.`);
+    return;
+  }
+
+  // Fall 4: Aufgabe in diese Zelle verschieben
+  const targetList = week.cells[targetMod] || [];
   await executeTaskMove(targetWeekIdx, targetMod, targetList.length);
 }
 
@@ -745,6 +532,7 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   draggedTaskInfo = null;
   const srcList = appState.weeks[srcWeekIdx]?.cells[srcMod];
   if (!srcList || !srcList[srcIdx]) return;
+
   const [movedItem] = srcList.splice(srcIdx, 1);
   if (!appState.weeks[targetWeekIdx].cells[targetMod]) {
     appState.weeks[targetWeekIdx].cells[targetMod] = [];
@@ -760,6 +548,7 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   }
   saveState();
   renderAll();
+
   if (srcWeekIdx === targetWeekIdx && srcMod === targetMod) {
     showToast('↕️ Reihenfolge aktualisiert!');
   } else {
@@ -789,11 +578,11 @@ function moveTaskOrder(weekIdx, shortName, itemIdx, direction) {
 }
 
 /* =========================================================
-   TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE
+   5. TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE
    ========================================================= */
 function populateFocusWeekDropdown() {
   const select = document.getElementById('focusWeekSelect');
-  if (!select) return;
+  if (!select || !appState?.weeks) return;
   const currentVal = select.value;
   select.innerHTML = appState.weeks.map((w, idx) => {
     const labelOneLine = w.weekLabel.replace(/\n/g, ' ');
@@ -817,21 +606,24 @@ function selectCurrentCalendarWeek(rerender = true) {
 
 function renderFocusView() {
   const select = document.getElementById('focusWeekSelect');
-  if (!select) return;
+  if (!select || !appState?.weeks) return;
   if (select.options.length !== appState.weeks.length) {
     populateFocusWeekDropdown();
   }
   const selIdx = parseInt(select.value, 10) || 0;
   const week = appState.weeks[selIdx];
   if (!week) return;
+
   const titleEl = document.getElementById('focusWeekTitle');
   const progEl = document.getElementById('focusWeekProgress');
   const upcomingContainer = document.getElementById('focusUpcomingContainer');
   const overdueContainer = document.getElementById('focusOverdueContainer');
   const mondayIso = getWeekMondayDateString(selIdx);
+
   if (titleEl) {
     titleEl.textContent = `${week.weekLabel.replace(/\n/g, ' ')} (Montag: ${formatIsoDateDE(mondayIso)})`;
   }
+
   let weekTotal = 0;
   let weekDone = 0;
   let upcomingHtml = '';
@@ -851,6 +643,7 @@ function renderFocusView() {
       const folderKey = `foc_${selIdx}_${mod.shortName.replace(/\s+/g, '')}_${idx}`;
       const docsChipsHtml = renderTaskDocChipsHtml(taskDocs, folderKey);
       const actionMenuHtml = buildTaskActionMenuHtml(selIdx, mod.shortName, idx, item, 'foc');
+
       return `
         <li class="task-item ${statusClass}"
             ondragover="handleTaskDragOverItem(event)"
@@ -867,10 +660,15 @@ function renderFocusView() {
         </li>
       `;
     }).join('');
+
     const remainingDocs = getRemainingWeekDocs(selIdx, mod.shortName, shownDocIds);
     const remainingDocsHtml = renderUnassignedWeekDocsHtml(remainingDocs);
+
     upcomingHtml += `
-      <div class="module-focus-card">
+      <div class="module-focus-card"
+           ondragover="handleCellDragOver(event)"
+           ondragleave="handleCellDragLeave(event)"
+           ondrop="handleCellDrop(event, ${selIdx}, '${escapeAttr(mod.shortName)}')">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <h4 style="margin-bottom:0;">${escapeHtml(mod.shortName)} – ${escapeHtml(mod.fullName)}</h4>
           <button type="button" class="stat-doc-btn" onclick="openModuleDocsDirectly('${escapeAttr(mod.shortName)}', event)">📁 Modulspeicher</button>
@@ -928,7 +726,7 @@ function renderFocusView() {
 }
 
 /* =========================================================
-   AUFGABEN ABHAKEN, HINZUFÜGEN & BEARBEITEN
+   6. AUFGABEN ABHAKEN, HINZUFÜGEN & BEARBEITEN
    ========================================================= */
 function toggleTaskDone(weekIdx, shortName, itemIdx) {
   const items = appState.weeks[weekIdx]?.cells[shortName];
@@ -1001,10 +799,12 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
   document.getElementById('editTaskOrigModule').value = '';
   document.getElementById('editTaskItemIdx').value = '';
   document.getElementById('deleteTaskModalBtn').style.display = 'none';
+
   const nowIdx = findWeekIndexByDate(new Date());
   const targetWeek = (preselectedWeekIdx !== null && !isNaN(preselectedWeekIdx))
     ? preselectedWeekIdx
     : (nowIdx !== -1 ? nowIdx : 0);
+
   document.getElementById('taskWeekSelect').value = String(targetWeek);
   document.getElementById('taskModuleSelect').value = preselectedModule || appState.modules[0].shortName;
   updateTaskPositionOptions();
@@ -1014,6 +814,7 @@ function openTaskModal(preselectedWeekIdx = null, preselectedModule = null) {
   document.getElementById('taskDoneCheck').checked = false;
   const inProgEl = document.getElementById('taskInProgressCheck');
   if (inProgEl) inProgEl.checked = false;
+
   openModal('taskModal');
   setTimeout(() => document.getElementById('taskTextInput')?.focus(), 80);
 }
@@ -1050,6 +851,7 @@ function saveTaskFromModal() {
     textInput.focus();
     return;
   }
+
   const targetWeekIdx = parseInt(document.getElementById('taskWeekSelect').value, 10);
   const targetPos = parseInt(document.getElementById('taskPositionSelect')?.value || '0', 10);
   const mondayDefault = getWeekMondayDateString(targetWeekIdx);
@@ -1057,6 +859,7 @@ function saveTaskFromModal() {
   const syncCalendar = document.getElementById('taskSyncCalendarCheck').checked;
   const done = document.getElementById('taskDoneCheck').checked;
   const inProgress = !done && !!document.getElementById('taskInProgressCheck')?.checked;
+
   const origWeekStr = document.getElementById('editTaskWeekIdx').value;
   const origMod = document.getElementById('editTaskOrigModule').value;
   const origItemStr = document.getElementById('editTaskItemIdx').value;
@@ -1064,6 +867,7 @@ function saveTaskFromModal() {
   if (!appState.weeks[targetWeekIdx].cells[targetMod]) {
     appState.weeks[targetWeekIdx].cells[targetMod] = [];
   }
+
   if (origWeekStr !== '' && origItemStr !== '') {
     const origWeekIdx = parseInt(origWeekStr, 10);
     const origItemIdx = parseInt(origItemStr, 10);
@@ -1076,10 +880,12 @@ function saveTaskFromModal() {
       existingItem.syncCalendar = syncCalendar;
       existingItem.done = done;
       existingItem.inProgress = inProgress;
+
       appState.weeks[origWeekIdx].cells[origMod].splice(origItemIdx, 1);
       const destList = appState.weeks[targetWeekIdx].cells[targetMod];
       const boundedPos = Math.min(Math.max(0, targetPos), destList.length);
       destList.splice(boundedPos, 0, existingItem);
+
       saveState();
       renderAll();
       closeModal('taskModal');
@@ -1090,6 +896,7 @@ function saveTaskFromModal() {
       return;
     }
   }
+
   const newItem = {
     text: cleanText,
     done: done,
@@ -1100,6 +907,7 @@ function saveTaskFromModal() {
   const destList = appState.weeks[targetWeekIdx].cells[targetMod];
   const boundedPos = Math.min(Math.max(0, targetPos), destList.length);
   destList.splice(boundedPos, 0, newItem);
+
   saveState();
   renderAll();
   closeModal('taskModal');
@@ -1174,7 +982,7 @@ async function syncAndClean() {
 }
 
 /* =========================================================
-   TAB 4: E-MAIL BRIEFING GENERATOR & PDF-EXPORT
+   7. TAB 4: E-MAIL BRIEFING GENERATOR & PDF-EXPORT
    ========================================================= */
 function buildEmailHtmlObject() {
   const statsObj = calculateStats();
@@ -1189,8 +997,10 @@ function buildEmailHtmlObject() {
   const darkColor = themeObj.colors[1];
   const lightBg = themeObj.light;
   const borderCol = themeObj.border;
+
   let upcomingTasksHtml = '';
   let plainTextLines = [`DEIN SEMESTERPLAN-UPDATE: ${upcomingWeekLabel} (Wochenstart Mo, ${mondayStr})`, '====================================', '', 'AUFGABEN DIESER WOCHE:'];
+
   for (const mod of appState.modules) {
     const items = week.cells[mod.shortName] || [];
     if (items.length > 0) {
@@ -1211,6 +1021,7 @@ function buildEmailHtmlObject() {
   if (!upcomingTasksHtml) {
     upcomingTasksHtml = '<p style="color: #555;">Für diese Woche stehen laut Semesterplan keine Aufgaben an.</p>';
   }
+
   let overdueTasksHtml = '';
   for (let wIdx = 0; wIdx < selIdx; wIdx++) {
     const pastWeek = appState.weeks[wIdx];
@@ -1227,6 +1038,7 @@ function buildEmailHtmlObject() {
       }
     }
   }
+
   let progressHtml = '';
   for (const mod of appState.modules) {
     const s = statsObj.moduleStats[mod.shortName];
@@ -1241,6 +1053,7 @@ function buildEmailHtmlObject() {
         </div>
       </div>`;
   }
+
   const htmlBody = `
     <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; border: 1px solid ${borderCol}; border-radius: 10px; overflow: hidden; background: #FFFFFF;">
       <div style="background: linear-gradient(135deg, ${primaryColor} 0%, ${darkColor} 100%); color: #FFFFFF; padding: 18px 24px;">
@@ -1260,6 +1073,7 @@ function buildEmailHtmlObject() {
         ` : ''}
       </div>
     </div>`;
+
   return {
     subject: `Semesterplan-Briefing: ${upcomingWeekLabel} (${statsObj.overallPct}% erledigt)`,
     htmlBody,
@@ -1304,6 +1118,11 @@ function openPdfModal() {
   const themeObj = THEMES[currentThemeKey] || THEMES.rose;
   const labelEl = document.getElementById('pdfThemeNameLabel');
   if (labelEl) labelEl.textContent = themeObj.label;
+  if (currentTab !== 'table') {
+    const stats = calculateStats();
+    renderDashboard(stats);
+    renderTable(stats);
+  }
   updatePdfPreview();
   openModal('pdfModal');
 }
@@ -1376,39 +1195,6 @@ async function downloadThemedPdfFile() {
 function printWithThemeColors() {
   closeModal('pdfModal');
   setTimeout(() => window.print(), 200);
-}
-
-/* =========================================================
-   UI HELFER (MODALS, TOAST, ESCAPING)
-   ========================================================= */
-function openModal(id) {
-  document.getElementById(id)?.classList.add('open');
-}
-
-function closeModal(id) {
-  document.getElementById(id)?.classList.remove('open');
-}
-
-let toastTimer = null;
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  if (!t) return;
-  t.textContent = msg;
-  t.classList.add('show');
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
-}
-
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function escapeAttr(str) {
-  return String(str ?? '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

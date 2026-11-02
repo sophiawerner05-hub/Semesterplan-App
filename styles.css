@@ -130,7 +130,7 @@
   --task-bg: rgba(255, 255, 255, 0.96);
   --shadow: 0 4px 16px rgba(107, 68, 76, 0.07);
 }
-/* DUNKLE FARBSCHEMATA (ÄSTHETISCHER DARK MODE) */
+/* DUNKLE FARBSCHEMATA */
 [data-theme="dark"] {
   --primary: #D97789;
   --primary-dark: #F3A6B4;
@@ -243,7 +243,7 @@
 }
 
 /* =========================================================
-   2. BASIS, RESET (MIT MAUSRAD-FIX FÜR LAPTOP) & LADEKREIS
+   2. BASIS, RESET & GLOBALER LADEKREIS
    ========================================================= */
 * {
   box-sizing: border-box;
@@ -251,6 +251,7 @@
   padding: 0;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
+  -webkit-tap-highlight-color: transparent;
 }
 html {
   width: 100%;
@@ -274,12 +275,13 @@ body {
 .drag-hint-banner,
 #dragHintBanner,
 .date-tag,
+.unassigned-hint-label,
 .ios-statusbar,
 .ios-dynamic-island {
   display: none !important;
 }
 
-/* Globaler Ladekreis (Spinner) inkl. "✖ Abbrechen"-Button */
+/* Globaler Ladekreis inkl. Abbrechen-Button */
 .global-loader {
   position: fixed;
   top: max(14px, env(safe-area-inset-top));
@@ -336,7 +338,6 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Swipe-to-Sync Indikator für iPad & Handy */
 .swipe-sync-indicator {
   position: fixed;
   top: 0;
@@ -504,16 +505,16 @@ body {
 }
 
 /* =========================================================
-   4. HEADER, FARBDESIGN-VORSCHAU & GOOGLE / DRIVE BUTTONS
+   4. HEADER (STICKY MITLAUFEND) & FARBDESIGN-AUSWAHL
    ========================================================= */
 header {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
-  padding: max(14px, env(safe-area-inset-top)) 24px 14px 24px;
+  padding: max(12px, env(safe-area-inset-top)) 20px 12px 20px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 200;
 }
 [data-theme="dark"] header {
   background: linear-gradient(135deg, #3A2027 0%, #1E1419 100%);
@@ -586,15 +587,17 @@ header {
 }
 .mobile-view-mode-btn {
   display: none;
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.45);
   color: #FFFFFF;
   border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.76rem;
-  font-weight: 700;
+  padding: 6px 11px;
+  font-size: 0.78rem;
+  font-weight: 800;
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 .action-bar {
   display: flex;
@@ -704,6 +707,7 @@ header {
   transition: all 0.18s ease;
   text-decoration: none;
   white-space: nowrap;
+  touch-action: manipulation;
 }
 .btn-sm {
   padding: 5px 10px;
@@ -868,8 +872,9 @@ header {
   border-radius: 6px;
   padding: 3px 8px;
   font-size: 0.71rem;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
+  transition: all 0.15s;
 }
 .stat-doc-btn:hover {
   background: var(--primary);
@@ -943,23 +948,27 @@ header {
 }
 
 /* =========================================================
-   8. TABELLE, KOPFZEILE FÜR DOKUMENTE OHNE WOCHENBEZUG,
-      AUFGABEN-ORDNER & DIREKT-BEARBEITEN-CHIP
+   8. STICKY HANDY-LEISTE (LÄUFT BEIM SCROLLEN MIT!) & TABELLE
    ========================================================= */
 .mobile-current-week-banner {
   display: none;
+  position: sticky;
+  top: calc(max(10px, env(safe-area-inset-top)) + 44px);
+  z-index: 185;
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
-  padding: 10px 14px;
+  padding: 9px 13px;
   border-radius: 12px;
   margin-bottom: 12px;
-  font-size: 0.84rem;
+  font-size: 0.81rem;
   font-weight: 700;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  box-shadow: var(--shadow);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 .table-wrapper {
   background: var(--card-bg);
@@ -1013,7 +1022,7 @@ td {
 }
 td.drag-over-cell {
   background-color: var(--primary-light) !important;
-  outline: 2px dashed var(--primary);
+  outline: 2.5px dashed var(--primary-dark) !important;
   outline-offset: -3px;
 }
 tr.even-row td {
@@ -1142,20 +1151,22 @@ td.completed-cell {
   font-size: 0.82rem;
 }
 
-/* Drei-Punkte-Menü (⋮) für Aufgaben-Aktionen */
-.task-menu-wrapper {
+/* Drei-Punkte-Menü (⋮ / ⋯) für Aufgaben & Dokumente */
+.task-menu-wrapper,
+.doc-menu-wrapper {
   position: relative;
   flex-shrink: 0;
   margin-left: 2px;
 }
-.task-menu-btn {
+.task-menu-btn,
+.doc-menu-btn {
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-muted);
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 800;
   line-height: 1;
   cursor: pointer;
@@ -1163,29 +1174,34 @@ td.completed-cell {
   align-items: center;
   justify-content: center;
   transition: all 0.15s ease;
+  touch-action: manipulation;
 }
 .task-menu-btn:hover,
-.task-menu-btn.active {
+.task-menu-btn.active,
+.doc-menu-btn:hover,
+.doc-menu-btn.active {
   background: var(--primary-light);
   color: var(--primary-dark);
   border-color: var(--primary-border);
 }
-.task-dropdown-menu {
+.task-dropdown-menu,
+.doc-dropdown-menu {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  min-width: 210px;
+  min-width: 215px;
   background: var(--card-bg);
   border: 1px solid var(--primary-border);
   border-radius: 10px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.26);
   padding: 5px;
-  z-index: 95;
+  z-index: 260;
   display: none;
   flex-direction: column;
   gap: 2px;
 }
-.task-dropdown-menu.open {
+.task-dropdown-menu.open,
+.doc-dropdown-menu.open {
   display: flex;
 }
 .task-menu-item {
@@ -1193,9 +1209,9 @@ td.completed-cell {
   border: none;
   background: transparent;
   color: var(--text-main);
-  padding: 7px 10px;
+  padding: 8px 10px;
   border-radius: 7px;
-  font-size: 0.79rem;
+  font-size: 0.8rem;
   font-weight: 600;
   text-align: left;
   display: flex;
@@ -1204,6 +1220,7 @@ td.completed-cell {
   cursor: pointer;
   transition: background 0.12s;
   white-space: nowrap;
+  touch-action: manipulation;
 }
 .task-menu-item:hover {
   background: var(--primary-light);
@@ -1215,6 +1232,7 @@ td.completed-cell {
 .task-menu-item.danger-item:hover {
   background: var(--warning-bg);
 }
+
 .testat-tag,
 .inprogress-tag {
   display: inline-block;
@@ -1233,7 +1251,7 @@ td.completed-cell {
   border: 1px solid var(--inprogress-border);
 }
 
-/* Dokument-Chips inkl. Direkt-Umordnen-Stift (✏️) */
+/* Dokument-Chips mit kompaktem ⋯-Menü (verzieht das Layout nicht!) */
 .task-docs-row {
   display: flex;
   flex-wrap: wrap;
@@ -1243,12 +1261,13 @@ td.completed-cell {
 }
 .task-doc-chip-group {
   display: inline-flex;
-  align-items: stretch;
+  align-items: center;
   max-width: 100%;
+  min-width: 0;
   border-radius: 6px;
-  overflow: hidden;
   border: 1px solid var(--primary-border);
   background: var(--primary-light);
+  position: relative;
 }
 .task-doc-chip-group.solution-chip {
   background: var(--success-bg);
@@ -1261,7 +1280,7 @@ td.completed-cell {
 .task-doc-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   background: transparent;
   color: var(--primary-dark);
   border: none;
@@ -1272,6 +1291,7 @@ td.completed-cell {
   min-width: 0;
   flex: 1;
   transition: all 0.15s ease;
+  touch-action: manipulation;
 }
 .task-doc-chip-group.solution-chip .task-doc-chip {
   color: var(--success-text);
@@ -1282,22 +1302,26 @@ td.completed-cell {
 .task-doc-chip:hover {
   background: var(--primary);
   color: #FFFFFF !important;
+  border-radius: 5px 0 0 5px;
 }
-.chip-edit-btn {
+.chip-dots-btn {
   border: none;
   border-left: 1px solid var(--primary-border);
   background: rgba(255, 255, 255, 0.45);
-  color: var(--text-muted);
-  padding: 0 6px;
-  font-size: 0.68rem;
+  color: var(--primary-dark);
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  font-weight: 900;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+  height: 100%;
+  border-radius: 0 5px 5px 0;
+  touch-action: manipulation;
 }
-.chip-edit-btn:hover {
+.chip-dots-btn:hover {
   background: var(--primary-dark);
   color: #FFFFFF;
 }
@@ -1305,17 +1329,17 @@ td.completed-cell {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 165px;
+  max-width: 145px;
 }
 
-/* Aufklappbarer Ordner, wenn eine Aufgabe 2+ Dokumente hat */
+/* Aufklappbarer Aufgaben-Ordner (ebenfalls per Drag & Drop ziehbar) */
 .task-folder-box {
   width: 100%;
   margin-top: 3px;
   border: 1px solid var(--primary-border);
   border-radius: 7px;
   background: var(--card-bg);
-  overflow: hidden;
+  overflow: visible;
 }
 .task-folder-toggle {
   width: 100%;
@@ -1325,6 +1349,7 @@ td.completed-cell {
   padding: 4px 8px;
   font-size: 0.72rem;
   font-weight: 700;
+  border-radius: 6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1342,11 +1367,11 @@ td.completed-cell {
   flex-direction: column;
   gap: 4px;
   background: var(--card-bg);
+  border-radius: 0 0 6px 6px;
 }
 .task-folder-box.open .task-folder-content {
   display: flex;
 }
-
 .cell-docs-footer {
   margin-top: 6px;
   padding-top: 6px;
@@ -1354,11 +1379,6 @@ td.completed-cell {
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-.unassigned-hint-label {
-  font-size: 0.67rem;
-  color: var(--text-muted);
-  font-weight: 600;
 }
 .add-task-btn {
   margin-top: 6px;
@@ -1396,8 +1416,7 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   9. MODUL-DOKUMENTENSPEICHER (KOMPAKTES RASTER & ORDNER)
-      & KATEGORIEN (INKL. FORMELSAMMLUNG & ZUSATZ)
+   9. MODUL-DOKUMENTENSPEICHER (DIREKT-ANSICHT & ⋯-MENÜ)
    ========================================================= */
 .docs-header-bar {
   display: flex;
@@ -1429,6 +1448,11 @@ tr.summary-bar-row td:first-child {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  transition: outline 0.15s, background-color 0.15s;
+}
+.module-doc-section.drag-over-cell {
+  outline: 2.5px dashed var(--primary);
+  background: var(--primary-light);
 }
 .module-doc-col-header {
   display: flex;
@@ -1445,7 +1469,7 @@ tr.summary-bar-row td:first-child {
 }
 .docs-compact-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 10px;
 }
 .doc-folder-card {
@@ -1459,6 +1483,10 @@ tr.summary-bar-row td:first-child {
   gap: 8px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
   min-width: 0;
+  cursor: grab;
+}
+.doc-folder-card:active {
+  cursor: grabbing;
 }
 .doc-folder-card.general-folder {
   border-top-color: var(--primary-dark);
@@ -1481,6 +1509,7 @@ tr.summary-bar-row td:first-child {
   font-size: 0.7rem;
   color: var(--text-muted);
   font-weight: 600;
+  flex-shrink: 0;
 }
 .doc-folder-files {
   display: flex;
@@ -1497,10 +1526,12 @@ tr.summary-bar-row td:first-child {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  position: relative;
 }
 .doc-item-info {
   flex: 1;
   min-width: 0;
+  cursor: pointer;
 }
 .doc-item-title {
   font-weight: 700;
@@ -1544,17 +1575,14 @@ tr.summary-bar-row td:first-child {
   display: flex;
   gap: 3px;
   flex-shrink: 0;
-}
-.doc-item-actions .btn-sm {
-  padding: 3px 6px;
-  font-size: 0.72rem;
+  align-items: center;
 }
 
 /* Großes Drag & Drop Hochladefenster */
 .dropzone-large {
   width: 100%;
-  min-height: 185px;
-  padding: 26px 20px;
+  min-height: 175px;
+  padding: 24px 18px;
   border: 2.5px dashed var(--primary);
   border-radius: 14px;
   background: var(--primary-light);
@@ -1575,11 +1603,11 @@ tr.summary-bar-row td:first-child {
   transform: scale(1.005);
 }
 .dropzone-icon {
-  font-size: 2.5rem;
+  font-size: 2.4rem;
   line-height: 1;
 }
 .dropzone-title {
-  font-size: 0.98rem;
+  font-size: 0.96rem;
   font-weight: 800;
   color: var(--primary-dark);
 }
@@ -1739,6 +1767,8 @@ tr.summary-bar-row td:first-child {
 }
 .pdf-render-target .add-task-btn,
 .pdf-render-target .task-menu-wrapper,
+.pdf-render-target .doc-menu-wrapper,
+.pdf-render-target .chip-dots-btn,
 .pdf-render-target .drag-handle {
   display: none !important;
 }
@@ -1754,7 +1784,7 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   11. MODALS & FORMS
+   11. MODALS & FORMS (IPAD/IOS TOUCH-OPTIMIERT)
    ========================================================= */
 .modal-backdrop {
   position: fixed;
@@ -1763,8 +1793,8 @@ tr.summary-bar-row td:first-child {
   display: none;
   justify-content: center;
   align-items: center;
-  z-index: 300;
-  padding: 16px;
+  z-index: 500;
+  padding: 14px;
 }
 .modal-backdrop.open {
   display: flex;
@@ -1774,9 +1804,10 @@ tr.summary-bar-row td:first-child {
   border-radius: var(--radius);
   max-width: 680px;
   width: 100%;
-  max-height: 92vh;
+  max-height: 90dvh;
   overflow-y: auto;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  -webkit-overflow-scrolling: touch;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
   border: 1px solid var(--primary-border);
 }
 .modal-header {
@@ -1786,6 +1817,9 @@ tr.summary-bar-row td:first-child {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 .modal-header h3 {
   font-size: 1.05rem;
@@ -1797,6 +1831,7 @@ tr.summary-bar-row td:first-child {
   font-size: 1.5rem;
   cursor: pointer;
   line-height: 1;
+  padding: 2px 6px;
 }
 .modal-body {
   padding: 20px;
@@ -1815,14 +1850,9 @@ tr.summary-bar-row td:first-child {
   color: var(--text-muted);
   margin-bottom: 12px;
 }
-.modal-divider {
-  border: none;
-  border-top: 1px solid var(--primary-border);
-  margin: 18px 0;
-}
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
 }
 .form-group label {
@@ -1834,14 +1864,16 @@ tr.summary-bar-row td:first-child {
 }
 .form-group input[type="text"],
 .form-group input[type="date"],
+.form-group select,
 .full-width {
   width: 100%;
-  padding: 9px 11px;
+  padding: 10px 12px;
   border: 1px solid var(--primary-border);
-  border-radius: 7px;
-  font-size: 0.88rem;
+  border-radius: 8px;
+  font-size: 0.92rem;
   background: var(--card-bg);
   color: var(--text-main);
+  min-height: 40px;
 }
 .checkbox-group {
   display: flex;
@@ -1882,7 +1914,7 @@ tr.summary-bar-row td:first-child {
   transform: translateY(15px);
   transition: all 0.25s ease;
   pointer-events: none;
-  z-index: 400;
+  z-index: 600;
   max-width: 90vw;
 }
 .toast.show {
@@ -1892,7 +1924,7 @@ tr.summary-bar-row td:first-child {
 
 /* =========================================================
    12. HANDY- & IPHONE-VORSCHAU AUF DEM LAPTOP
-       (SCROLLT NATIV MIT DEM MAUSRAD ÜBERALL AUF DEM BILDSCHIRM)
+       (MITLAUFENDE KOMPAKT/LISTE-LEISTE & KOMPAKTE TOP-KARTEN)
    ========================================================= */
 .ios-bottom-nav {
   display: none;
@@ -1925,7 +1957,6 @@ tr.summary-bar-row td:first-child {
     width: 890px;
   }
 }
-
 body.iphone-view-mode .mobile-current-week-banner,
 body.iphone-view-mode .mobile-view-mode-btn {
   display: inline-flex;
@@ -1933,6 +1964,14 @@ body.iphone-view-mode .mobile-view-mode-btn {
 body.iphone-view-mode header {
   padding: 10px 12px;
   border-radius: 30px 30px 0 0;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+}
+body.iphone-view-mode .mobile-current-week-banner {
+  position: sticky;
+  top: 56px;
+  z-index: 185;
 }
 body.iphone-view-mode .brand-subtitle,
 body.iphone-view-mode .brand-icon,
@@ -1950,34 +1989,32 @@ body.iphone-view-mode .container {
   width: 100%;
   max-width: 100%;
 }
-body.iphone-view-mode .dashboard-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-body.iphone-view-mode.mobile-list-view .dashboard-grid {
-  grid-template-columns: 1fr !important;
+/* WICHTIG: Modulübersicht oben bleibt AUCH bei Liste immer kompakt zweispaltig! */
+body.iphone-view-mode .dashboard-grid,
+body.iphone-view-mode.mobile-list-view .dashboard-grid,
+body.iphone-view-mode.mobile-compact-view .dashboard-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
 }
 body.iphone-view-mode .stat-card {
-  padding: 10px 11px;
+  padding: 9px 10px;
   border-radius: 12px;
   width: 100%;
 }
 body.iphone-view-mode .stat-title {
-  font-size: 0.86rem;
+  font-size: 0.84rem;
 }
 body.iphone-view-mode .stat-pct {
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
 body.iphone-view-mode .stat-sub {
-  font-size: 0.68rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 0.67rem;
+  margin-bottom: 5px;
 }
 body.iphone-view-mode .stat-doc-bar {
-  font-size: 0.68rem;
-  margin-top: 6px;
-  padding-top: 5px;
+  font-size: 0.67rem;
+  margin-top: 5px;
+  padding-top: 4px;
 }
 body.iphone-view-mode .filter-controls,
 body.iphone-view-mode .input-search,
@@ -2033,7 +2070,7 @@ body.iphone-view-mode thead tr.general-docs-row {
   margin-bottom: 12px;
   border-radius: 14px;
   border: 1px solid var(--primary-border);
-  overflow: hidden;
+  overflow: visible;
 }
 body.iphone-view-mode tbody tr,
 .pdf-compact-cards tbody tr {
@@ -2100,7 +2137,7 @@ body.iphone-view-mode .ios-bottom-nav {
   border-top: 1px solid var(--primary-border);
   border-radius: 0 0 30px 30px;
   padding: 6px 8px 10px 8px;
-  z-index: 150;
+  z-index: 190;
   margin-top: auto;
 }
 [data-theme="dark"] body.iphone-view-mode .ios-bottom-nav,
@@ -2195,6 +2232,12 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     position: sticky;
     top: 0;
     border-radius: 0;
+    z-index: 200;
+  }
+  .mobile-current-week-banner {
+    position: sticky;
+    top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+    z-index: 185;
   }
   .brand-icon,
   .brand-subtitle,
@@ -2212,25 +2255,26 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     width: 100%;
     max-width: 100%;
   }
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-  body.mobile-list-view .dashboard-grid {
-    grid-template-columns: 1fr !important;
+  /* Modulübersicht oben bleibt AUCH bei Liste immer kompakt zweispaltig! */
+  .dashboard-grid,
+  body.mobile-list-view .dashboard-grid,
+  body.mobile-compact-view .dashboard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
   }
   .stat-card {
-    padding: 10px 11px;
+    padding: 9px 10px;
     width: 100%;
   }
   .stat-title {
-    font-size: 0.86rem;
+    font-size: 0.84rem;
   }
   .stat-pct {
-    font-size: 0.92rem;
+    font-size: 0.9rem;
   }
   .stat-sub {
-    font-size: 0.68rem;
+    font-size: 0.67rem;
+    margin-bottom: 5px;
   }
   .filter-controls,
   .input-search,
@@ -2272,7 +2316,7 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     margin-bottom: 12px;
     border-radius: 14px;
     border: 1px solid var(--primary-border);
-    overflow: hidden;
+    overflow: visible;
   }
   tbody tr {
     margin-bottom: 14px;
@@ -2320,7 +2364,7 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     margin-top: 0;
     padding: 4px 10px;
   }
-  /* Kompakt-Ansicht auf echten Smartphones (wie im Querformat) */
+  /* Kompakt-Ansicht auf echten Smartphones */
   body.mobile-compact-view tbody tr,
   body.mobile-compact-view thead tr.general-docs-row {
     display: grid !important;
@@ -2339,6 +2383,9 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
   }
   body.mobile-compact-view .task-text {
     font-size: 0.75rem !important;
+  }
+  body.mobile-compact-view .task-doc-chip-title {
+    max-width: 95px;
   }
   .ios-bottom-nav {
     display: flex !important;
@@ -2404,6 +2451,8 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
   .no-print,
   .add-task-btn,
   .task-menu-wrapper,
+  .doc-menu-wrapper,
+  .chip-dots-btn,
   .drag-handle,
   .modal-backdrop,
   .ios-bottom-nav,

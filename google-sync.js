@@ -1,5 +1,5 @@
 /* =========================================================
-   DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
+   UNTERPROGRAMM 8: DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
    - Jederzeit abbrechbar über "✖ Abbrechen" (AbortController)
    - Google Account dauerhaft merken (login_hint & Auto-Reconnect)
    - Google Tasks, Kalender (Montags-Modus ohne Emojis/Klammern) & Gmail
@@ -26,7 +26,7 @@ let isSyncInProgress = false;
 
 function getConfiguredClientId() {
   const stored = localStorage.getItem('semesterplan_google_client_id');
-  if (stored && stored.includes('.apps.googleusercontent.com') && !stored.startsWith('DEINE_')) {
+  if (stored && stored.includes('.apps.googleusercontent.com') && !stored.startsWith('DEINE_') && !stored.startsWith('GOCSPX-')) {
     return stored;
   }
   return DEFAULT_GOOGLE_CLIENT_ID;
@@ -54,12 +54,8 @@ function updateGoogleConnectedUI(connected) {
       badge.textContent = rememberedEmail ? `☁️ ${rememberedEmail}` : '☁️ Live mit Google verbunden';
       badge.style.background = '#117864';
     }
-    if (pill) {
-      pill.textContent = '🔄 Auto-Sync: Aktiv';
-    }
-    if (drivePill) {
-      drivePill.textContent = '☁️ Drive-Speicher: Synchron';
-    }
+    if (pill) pill.textContent = '🔄 Auto-Sync: Aktiv';
+    if (drivePill) drivePill.textContent = '☁️ Drive-Speicher: Synchron';
     if (btnText) {
       btnText.textContent = rememberedEmail ? `Sync (${rememberedEmail.split('@')[0]})` : 'Verbunden (Sync)';
     }
@@ -71,12 +67,8 @@ function updateGoogleConnectedUI(connected) {
       badge.textContent = rememberedEmail ? `Gemerkt: ${rememberedEmail}` : 'Lokal & Offline-fähig';
       badge.style.background = '';
     }
-    if (pill) {
-      pill.textContent = '⏰ Auto-Sync: Bereit';
-    }
-    if (drivePill) {
-      drivePill.textContent = '☁️ Drive-Speicher: Lokal';
-    }
+    if (pill) pill.textContent = '⏰ Auto-Sync: Bereit';
+    if (drivePill) drivePill.textContent = '☁️ Drive-Speicher: Lokal';
     if (btnText) {
       btnText.textContent = rememberedEmail ? `Login (${rememberedEmail.split('@')[0]})` : 'Google Login';
     }
@@ -98,9 +90,9 @@ function initGoogleSyncSettingsUI() {
   if (calCheck) {
     calCheck.checked = localStorage.getItem('semesterplan_sync_calendar') !== 'false';
   }
-
   const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
   const savedExpiry = parseInt(localStorage.getItem(TOKEN_EXPIRY_KEY) || '0', 10);
+
   if (savedToken && Date.now() < savedExpiry) {
     googleAccessToken = savedToken;
     updateGoogleConnectedUI(true);
@@ -132,6 +124,7 @@ function initGoogleSyncSettingsUI() {
     }
   });
 }
+
 window.addEventListener('DOMContentLoaded', initGoogleSyncSettingsUI);
 
 function startBackgroundAutoSync() {
@@ -144,7 +137,7 @@ function startBackgroundAutoSync() {
       }
       checkAndSendWeeklyAutoEmail();
     }
-  }, 60 * 1000);
+  }, 90 * 1000);
 }
 
 function handleGooglePrimaryClick() {
@@ -283,11 +276,17 @@ async function fetchAllGoogleTasks(listId) {
 }
 
 async function ensureModuleTaskLists(forceRefresh = false) {
+  if (!appState && typeof loadState === 'function') {
+    loadState();
+  }
+  if (!appState || !Array.isArray(appState.modules)) {
+    throw new Error('App-Daten (appState.modules) sind noch nicht geladen.');
+  }
   if (!forceRefresh && Object.keys(cachedListMap).length === appState.modules.length) {
     return cachedListMap;
   }
   const listsData = await googleApiFetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100');
-  const existingLists = listsData.items || [];
+  const existingLists = (listsData && listsData.items) || [];
   const listMap = {};
   existingLists.forEach(l => {
     const cleanTitle = l.title.trim().replace(/^\[|\]$/g, '');
@@ -547,9 +546,11 @@ async function syncWithGoogleTasksAPI(silent = false) {
           const cleanText = extractCleanTaskDescription(shortName, item.text);
           item.text = cleanText;
           const expectedCleanTitle = buildCleanGoogleTitle(shortName, cleanText);
+
           let matchedTask = item.googleTaskId
             ? activeGoogleTasks.find(t => t.id === item.googleTaskId && !matchedGoogleTaskIds.has(t.id))
             : null;
+
           if (!matchedTask) {
             matchedTask = activeGoogleTasks.find(t => {
               if (matchedGoogleTaskIds.has(t.id) || !t.title) return false;
@@ -561,6 +562,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
               return true;
             });
           }
+
           if (!matchedTask) {
             const payload = buildTaskPayload(wIdx, shortName, item);
             const created = await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`, {
@@ -604,6 +606,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
             item.lastSyncedDone = item.done;
             item.lastSyncedText = item.text;
           }
+
           if (item.googleEventId && item.syncCalendar !== false) {
             await createOrUpdateCalendarEvent(wIdx, shortName, item);
           }
@@ -616,6 +619,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
         if (isLegacyWeekHeaderTask(gTask, shortName)) continue;
         const cleanTaskText = extractCleanTaskDescription(shortName, gTask.title || '');
         if (!cleanTaskText) continue;
+
         let targetWeekIdx = -1;
         if (gTask.notes) {
           const idMatch = gTask.notes.match(/WocheID:(week_\d+)/);
@@ -630,6 +634,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
           const nowIdx = findWeekIndexByDate(new Date());
           targetWeekIdx = nowIdx !== -1 ? nowIdx : 0;
         }
+
         const targetWeek = appState.weeks[targetWeekIdx];
         const existingInCell = targetWeek.cells[shortName] || [];
         const duplicate = existingInCell.find(i => i.text.toLowerCase() === cleanTaskText.toLowerCase());
@@ -660,6 +665,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
     saveState();
     renderAll();
+
     if (!silent && !isCurrentActionCancelled()) {
       showToast('✅ Sync (Tasks, Kalender & Drive) abgeschlossen!');
     } else if (!isCurrentActionCancelled() && (statusChangedFromGoogleCount > 0 || importedFromGoogleCount > 0)) {
@@ -717,8 +723,9 @@ async function syncEventsFromGoogleCalendar() {
     const timeMax = new Date(2027, 2, 1).toISOString();
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&maxResults=250`;
     const calData = await googleApiFetch(url);
-    const events = calData.items || [];
+    const events = (calData && calData.items) || [];
     let importedCount = 0;
+
     for (const ev of events) {
       if (isCurrentActionCancelled()) break;
       const rawSummary = (ev.summary || '').trim();
@@ -735,14 +742,17 @@ async function syncEventsFromGoogleCalendar() {
         matchedMod = 'CAD';
       }
       if (!matchedMod) continue;
+
       const rawDateStr = ev.start?.date || (ev.start?.dateTime ? ev.start.dateTime.slice(0, 10) : null);
       if (!rawDateStr) continue;
       const p = rawDateStr.split('-');
       const eventDate = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 12, 0, 0);
       const weekIdx = findWeekIndexByDate(eventDate);
       if (weekIdx === -1) continue;
+
       const cleanTitle = extractCleanTaskDescription(matchedMod, rawSummary);
       if (!cleanTitle) continue;
+
       const expectedSummary = buildCleanGoogleTitle(matchedMod, cleanTitle);
       if (rawSummary !== expectedSummary) {
         try {
@@ -752,6 +762,7 @@ async function syncEventsFromGoogleCalendar() {
           });
         } catch (e) {}
       }
+
       const cellItems = appState.weeks[weekIdx].cells[matchedMod] || [];
       const exists = cellItems.some(i =>
         i.googleEventId === ev.id || i.text.toLowerCase() === cleanTitle.toLowerCase()
@@ -808,13 +819,14 @@ async function sendBriefingViaGmailAPI(silent = false) {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
+
     await googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
       body: JSON.stringify({ raw: base64UrlEncoded })
     });
     const nowStr = formatDateDE(new Date());
     localStorage.setItem('semesterplan_last_auto_email_date', nowStr);
-    renderEmailPreview();
+    if (currentTab === 'email') renderEmailPreview();
     if (!silent && !isCurrentActionCancelled()) {
       showToast('✅ Wochen-Briefing erfolgreich an dein Gmail-Postfach gesendet!');
     }
