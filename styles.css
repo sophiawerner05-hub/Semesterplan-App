@@ -243,7 +243,7 @@
 }
 
 /* =========================================================
-   2. BASIS, RESET, LADEKREIS MIT ABBRECHEN-TASTE & SWIPE-BANNER
+   2. BASIS, RESET (MIT MAUSRAD-FIX FÜR LAPTOP) & LADEKREIS
    ========================================================= */
 * {
   box-sizing: border-box;
@@ -252,12 +252,17 @@
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
-html, body {
-  max-width: 100%;
-  overflow-x: hidden;
-  overscroll-behavior-y: contain;
+html {
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: clip;
 }
 body {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  overflow-x: clip;
+  overflow-y: visible;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
   background-color: var(--bg-page);
   color: var(--text-main);
@@ -265,7 +270,6 @@ body {
   padding-bottom: 50px;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
-/* Dynamic Island Bar & alte Banner dauerhaft ausgeblendet */
 .hidden,
 .drag-hint-banner,
 #dragHintBanner,
@@ -349,6 +353,7 @@ body {
   font-size: 0.82rem;
   font-weight: 700;
   z-index: 9500;
+  pointer-events: none;
   transition: height 0.18s ease;
 }
 .swipe-sync-indicator.pulling {
@@ -579,7 +584,6 @@ header {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Mobiler Schnell-Umschalter für Kompakt- vs. Listen-Ansicht */
 .mobile-view-mode-btn {
   display: none;
   background: rgba(255, 255, 255, 0.2);
@@ -963,6 +967,7 @@ header {
   border: 1px solid var(--primary-border);
   box-shadow: var(--shadow);
   overflow-x: auto;
+  overflow-y: visible;
 }
 table {
   width: 100%;
@@ -1228,7 +1233,7 @@ td.completed-cell {
   border: 1px solid var(--inprogress-border);
 }
 
-/* Dokument-Chips inkl. Direkt-Umordnen-Stift (✏️) & neuen Kategorien */
+/* Dokument-Chips inkl. Direkt-Umordnen-Stift (✏️) */
 .task-docs-row {
   display: flex;
   flex-wrap: wrap;
@@ -1886,8 +1891,8 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   12. HANDY- & IPHONE-ANSICHT (OHNE STÖRENDE ISLAND-LEISTE)
-       INKL. AUSWAHL ZWISCHEN KOMPAKT- & LISTEN-ANSICHT
+   12. HANDY- & IPHONE-VORSCHAU AUF DEM LAPTOP
+       (SCROLLT NATIV MIT DEM MAUSRAD ÜBERALL AUF DEM BILDSCHIRM)
    ========================================================= */
 .ios-bottom-nav {
   display: none;
@@ -1895,31 +1900,29 @@ tr.summary-bar-row td:first-child {
 @media (min-width: 769px) {
   body.iphone-view-mode {
     background: #18181B;
-    padding: 20px 10px;
+    padding: 20px 10px 40px 10px;
     display: flex;
     justify-content: center;
+    align-items: flex-start;
   }
   body.iphone-view-mode .iphone-device-wrapper {
     width: 430px;
     max-width: 100%;
-    min-height: 850px;
-    max-height: 92vh;
+    min-height: 90vh;
     background: var(--bg-page);
     border-radius: 38px;
     border: 8px solid #27272A;
     box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 0 2px #52525B;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow-x: clip;
+    overflow-y: visible;
     position: relative;
     display: flex;
     flex-direction: column;
     padding-bottom: 74px;
-    transition: width 0.25s ease, min-height 0.25s ease;
+    transition: width 0.25s ease;
   }
   body.iphone-view-mode.landscape-mode .iphone-device-wrapper {
     width: 890px;
-    min-height: 430px;
-    max-height: 88vh;
   }
 }
 
@@ -1929,6 +1932,7 @@ body.iphone-view-mode .mobile-view-mode-btn {
 }
 body.iphone-view-mode header {
   padding: 10px 12px;
+  border-radius: 30px 30px 0 0;
 }
 body.iphone-view-mode .brand-subtitle,
 body.iphone-view-mode .brand-icon,
@@ -1950,7 +1954,6 @@ body.iphone-view-mode .dashboard-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-/* Listen-Ansicht auf dem Handy: 1 Spalte untereinander */
 body.iphone-view-mode.mobile-list-view .dashboard-grid {
   grid-template-columns: 1fr !important;
 }
@@ -2095,6 +2098,7 @@ body.iphone-view-mode .ios-bottom-nav {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid var(--primary-border);
+  border-radius: 0 0 30px 30px;
   padding: 6px 8px 10px 8px;
   z-index: 150;
   margin-top: auto;
@@ -2139,6 +2143,25 @@ body.iphone-view-mode .ios-bottom-nav {
   font-weight: 700;
 }
 
+/* Kompakt-Ansicht in der Desktop-Handy-Vorschau */
+body.iphone-view-mode.mobile-compact-view tbody tr,
+body.iphone-view-mode.mobile-compact-view thead tr.general-docs-row,
+body.iphone-view-mode.landscape-mode tbody tr,
+body.iphone-view-mode.landscape-mode thead tr.general-docs-row {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+body.iphone-view-mode.mobile-compact-view tbody tr td.week-col,
+body.iphone-view-mode.mobile-compact-view thead tr.general-docs-row td:first-child,
+body.iphone-view-mode.landscape-mode tbody tr td.week-col,
+body.iphone-view-mode.landscape-mode thead tr.general-docs-row td:first-child {
+  grid-column: 1 / -1 !important;
+}
+body.iphone-view-mode.mobile-compact-view .docs-compact-grid,
+body.iphone-view-mode.landscape-mode .docs-compact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
 /* =========================================================
    13. NATIVES SMARTPHONE-LAYOUT AUF ECHTEN HANDYS (<= 768px)
    ========================================================= */
@@ -2158,17 +2181,20 @@ body.iphone-view-mode .ios-bottom-nav {
     border: none !important;
     border-radius: 0 !important;
     box-shadow: none !important;
-    overflow-x: hidden !important;
+    overflow-x: clip !important;
+    overflow-y: visible !important;
     padding-bottom: 0 !important;
   }
   .mobile-current-week-banner,
   .mobile-view-mode-btn {
     display: inline-flex;
   }
-  header {
+  header,
+  body.iphone-view-mode header {
     padding: max(10px, env(safe-area-inset-top)) 12px 10px 12px;
     position: sticky;
     top: 0;
+    border-radius: 0;
   }
   .brand-icon,
   .brand-subtitle,
@@ -2294,6 +2320,26 @@ body.iphone-view-mode .ios-bottom-nav {
     margin-top: 0;
     padding: 4px 10px;
   }
+  /* Kompakt-Ansicht auf echten Smartphones (wie im Querformat) */
+  body.mobile-compact-view tbody tr,
+  body.mobile-compact-view thead tr.general-docs-row {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  body.mobile-compact-view tbody tr td.week-col,
+  body.mobile-compact-view thead tr.general-docs-row td:first-child {
+    grid-column: 1 / -1 !important;
+  }
+  body.mobile-compact-view .docs-compact-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  body.mobile-compact-view td {
+    padding: 7px !important;
+    font-size: 0.76rem !important;
+  }
+  body.mobile-compact-view .task-text {
+    font-size: 0.75rem !important;
+  }
   .ios-bottom-nav {
     display: flex !important;
     justify-content: space-around;
@@ -2306,6 +2352,7 @@ body.iphone-view-mode .ios-bottom-nav {
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-top: 1px solid var(--primary-border);
+    border-radius: 0;
     padding: 8px 6px calc(10px + env(safe-area-inset-bottom)) 6px;
     z-index: 250;
   }
@@ -2319,8 +2366,7 @@ body.iphone-view-mode .ios-bottom-nav {
 }
 
 /* =========================================================
-   14. HANDY KOMPAKT-ANSICHT & AUTOMATISCHES QUERFORMAT (LANDSCAPE)
-       (Ansicht bei "Kompakt" exakt wie im Querformat auf dem Handy!)
+   14. HANDY IM ECHTEN QUERFORMAT (LANDSCAPE <= 932px)
    ========================================================= */
 @media (max-width: 932px) and (orientation: landscape) {
   header {
@@ -2345,41 +2391,6 @@ body.iphone-view-mode .ios-bottom-nav {
   .docs-compact-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
-}
-
-/* Kompakte Handy-Ansicht (auch im Hochformat wählbar, Layout wie im Querformat) */
-body.mobile-compact-view .dashboard-grid,
-body.iphone-view-mode.landscape-mode .dashboard-grid,
-body.auto-landscape-active .dashboard-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  gap: 8px !important;
-}
-body.mobile-compact-view tbody tr,
-body.mobile-compact-view thead tr.general-docs-row,
-body.iphone-view-mode.landscape-mode tbody tr,
-body.iphone-view-mode.landscape-mode thead tr.general-docs-row,
-body.auto-landscape-active tbody tr {
-  display: grid !important;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-}
-body.mobile-compact-view tbody tr td.week-col,
-body.mobile-compact-view thead tr.general-docs-row td:first-child,
-body.iphone-view-mode.landscape-mode tbody tr td.week-col,
-body.iphone-view-mode.landscape-mode thead tr.general-docs-row td:first-child,
-body.auto-landscape-active tbody tr td.week-col {
-  grid-column: 1 / -1 !important;
-}
-body.mobile-compact-view .docs-compact-grid,
-body.iphone-view-mode.landscape-mode .docs-compact-grid,
-body.auto-landscape-active .docs-compact-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-}
-body.mobile-compact-view td {
-  padding: 7px !important;
-  font-size: 0.76rem !important;
-}
-body.mobile-compact-view .task-text {
-  font-size: 0.75rem !important;
 }
 
 /* =========================================================
