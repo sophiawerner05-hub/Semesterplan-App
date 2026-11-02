@@ -243,7 +243,7 @@
 }
 
 /* =========================================================
-   2. BASIS, RESET & LADEKREIS (SPINNER)
+   2. BASIS, RESET, LADEKREIS MIT ABBRECHEN-TASTE & SWIPE-BANNER
    ========================================================= */
 * {
   box-sizing: border-box;
@@ -255,6 +255,7 @@
 html, body {
   max-width: 100%;
   overflow-x: hidden;
+  overscroll-behavior-y: contain;
 }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
@@ -264,34 +265,38 @@ body {
   padding-bottom: 50px;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
+/* Dynamic Island Bar & alte Banner dauerhaft ausgeblendet */
 .hidden,
 .drag-hint-banner,
 #dragHintBanner,
-.date-tag {
+.date-tag,
+.ios-statusbar,
+.ios-dynamic-island {
   display: none !important;
 }
 
-/* Globaler Ladekreis (Spinner-Overlay oben) */
+/* Globaler Ladekreis (Spinner) inkl. "✖ Abbrechen"-Button */
 .global-loader {
   position: fixed;
-  top: 16px;
+  top: max(14px, env(safe-area-inset-top));
   left: 50%;
-  transform: translateX(-50%) translateY(-20px);
+  transform: translateX(-50%) translateY(-25px);
   background: var(--card-bg);
   color: var(--primary-dark);
   border: 2px solid var(--primary);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
-  padding: 8px 18px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  padding: 8px 14px 8px 16px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   font-weight: 700;
   z-index: 9999;
   opacity: 0;
   pointer-events: none;
   transition: all 0.22s ease;
+  max-width: 94vw;
 }
 .global-loader.active {
   opacity: 1;
@@ -307,8 +312,47 @@ body {
   animation: spinRing 0.75s linear infinite;
   flex-shrink: 0;
 }
+.loader-cancel-btn {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border: 1px solid var(--warning-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.loader-cancel-btn:hover {
+  background: var(--warning-text);
+  color: #FFFFFF;
+}
 @keyframes spinRing {
   to { transform: rotate(360deg); }
+}
+
+/* Swipe-to-Sync Indikator für iPad & Handy */
+.swipe-sync-indicator {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  z-index: 9500;
+  transition: height 0.18s ease;
+}
+.swipe-sync-indicator.pulling {
+  height: 44px;
 }
 
 /* =========================================================
@@ -353,7 +397,7 @@ body {
 .side-drawer-header {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
-  padding: 18px;
+  padding: max(18px, env(safe-area-inset-top)) 18px 18px 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -455,12 +499,12 @@ body {
 }
 
 /* =========================================================
-   4. HEADER, FARBDESIGN-VORSCHAU & GOOGLE BUTTONS
+   4. HEADER, FARBDESIGN-VORSCHAU & GOOGLE / DRIVE BUTTONS
    ========================================================= */
 header {
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
-  padding: 16px 24px;
+  padding: max(14px, env(safe-area-inset-top)) 24px 14px 24px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   position: sticky;
   top: 0;
@@ -493,7 +537,7 @@ header {
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .brand {
   display: flex;
@@ -534,6 +578,19 @@ header {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Mobiler Schnell-Umschalter für Kompakt- vs. Listen-Ansicht */
+.mobile-view-mode-btn {
+  display: none;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #FFFFFF;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
 }
 .action-bar {
   display: flex;
@@ -883,7 +940,7 @@ header {
 
 /* =========================================================
    8. TABELLE, KOPFZEILE FÜR DOKUMENTE OHNE WOCHENBEZUG,
-      AUFGABEN-ORDNER & DRAG-AND-DROP
+      AUFGABEN-ORDNER & DIREKT-BEARBEITEN-CHIP
    ========================================================= */
 .mobile-current-week-banner {
   display: none;
@@ -897,6 +954,7 @@ header {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   box-shadow: var(--shadow);
 }
 .table-wrapper {
@@ -927,7 +985,6 @@ th {
 th:first-child {
   width: 132px;
 }
-/* Spalten-Zeile direkt unter den Modulnamen für Dokumente ohne Wochenbezug */
 tr.general-docs-row td,
 tr.general-docs-row th {
   background: var(--primary-light) !important;
@@ -1023,7 +1080,6 @@ td.completed-cell {
 .task-item.drag-over-item {
   border-top: 3px solid var(--primary-dark);
 }
-/* Visuelles Highlight, wenn ein Dokument auf eine Aufgabe gezogen wird */
 .task-item.doc-drop-target {
   outline: 2px dashed var(--primary-dark);
   background: var(--primary-light) !important;
@@ -1172,7 +1228,7 @@ td.completed-cell {
   border: 1px solid var(--inprogress-border);
 }
 
-/* Dokument-Chips & Aufgaben-Ordner (bei mehreren Dateien pro Aufgabe) */
+/* Dokument-Chips inkl. Direkt-Umordnen-Stift (✏️) & neuen Kategorien */
 .task-docs-row {
   display: flex;
   flex-wrap: wrap;
@@ -1180,44 +1236,71 @@ td.completed-cell {
   width: 100%;
   padding-top: 2px;
 }
+.task-doc-chip-group {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--primary-border);
+  background: var(--primary-light);
+}
+.task-doc-chip-group.solution-chip {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+.task-doc-chip-group.formula-chip {
+  background: var(--inprogress-bg);
+  border-color: var(--inprogress-border);
+}
 .task-doc-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: var(--primary-light);
+  background: transparent;
   color: var(--primary-dark);
-  border: 1px solid var(--primary-border);
-  border-radius: 6px;
-  padding: 3px 8px;
+  border: none;
+  padding: 3px 7px;
   font-size: 0.71rem;
   font-weight: 600;
   cursor: pointer;
-  max-width: 100%;
+  min-width: 0;
+  flex: 1;
   transition: all 0.15s ease;
+}
+.task-doc-chip-group.solution-chip .task-doc-chip {
+  color: var(--success-text);
+}
+.task-doc-chip-group.formula-chip .task-doc-chip {
+  color: var(--inprogress-text);
 }
 .task-doc-chip:hover {
   background: var(--primary);
+  color: #FFFFFF !important;
+}
+.chip-edit-btn {
+  border: none;
+  border-left: 1px solid var(--primary-border);
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--text-muted);
+  padding: 0 6px;
+  font-size: 0.68rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.chip-edit-btn:hover {
+  background: var(--primary-dark);
   color: #FFFFFF;
-  border-color: var(--primary);
-}
-.task-doc-chip.solution-chip {
-  background: var(--success-bg);
-  color: var(--success-text);
-  border-color: var(--success-border);
-}
-.task-doc-chip.solution-chip:hover {
-  background: var(--success-text);
-  color: #FFFFFF;
-}
-.task-doc-chip.draggable-doc-chip {
-  cursor: grab;
-  border-style: dashed;
 }
 .task-doc-chip-title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 195px;
+  max-width: 165px;
 }
 
 /* Aufklappbarer Ordner, wenn eine Aufgabe 2+ Dokumente hat */
@@ -1309,7 +1392,7 @@ tr.summary-bar-row td:first-child {
 
 /* =========================================================
    9. MODUL-DOKUMENTENSPEICHER (KOMPAKTES RASTER & ORDNER)
-      & VERGRÖSSERTES DRAG-AND-DROP HOCHLADEFENSTER
+      & KATEGORIEN (INKL. FORMELSAMMLUNG & ZUSATZ)
    ========================================================= */
 .docs-header-bar {
   display: flex;
@@ -1355,7 +1438,6 @@ tr.summary-bar-row td:first-child {
   font-size: 1rem;
   color: var(--primary-dark);
 }
-/* Kompaktes Raster (Grid) für Ordner und Dokumente innerhalb eines Moduls */
 .docs-compact-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
@@ -1442,6 +1524,16 @@ tr.summary-bar-row td:first-child {
   background: var(--success-bg);
   color: var(--success-text);
   border: 1px solid var(--success-border);
+}
+.doc-cat-formula {
+  background: var(--inprogress-bg);
+  color: var(--inprogress-text);
+  border: 1px solid var(--inprogress-border);
+}
+.doc-cat-extra {
+  background: var(--card-bg);
+  color: var(--primary);
+  border: 1px solid var(--primary);
 }
 .doc-item-actions {
   display: flex;
@@ -1794,9 +1886,9 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   12. HANDY- & IPHONE-ANSICHT (2-SPALTEN-MODULRASTER & AKTUELLE WOCHE OBEN)
+   12. HANDY- & IPHONE-ANSICHT (OHNE STÖRENDE ISLAND-LEISTE)
+       INKL. AUSWAHL ZWISCHEN KOMPAKT- & LISTEN-ANSICHT
    ========================================================= */
-.ios-statusbar,
 .ios-bottom-nav {
   display: none;
 }
@@ -1808,13 +1900,13 @@ tr.summary-bar-row td:first-child {
     justify-content: center;
   }
   body.iphone-view-mode .iphone-device-wrapper {
-    width: 420px;
+    width: 430px;
     max-width: 100%;
     min-height: 850px;
     max-height: 92vh;
     background: var(--bg-page);
-    border-radius: 44px;
-    border: 9px solid #27272A;
+    border-radius: 38px;
+    border: 8px solid #27272A;
     box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 0 2px #52525B;
     overflow-y: auto;
     overflow-x: hidden;
@@ -1824,34 +1916,16 @@ tr.summary-bar-row td:first-child {
     padding-bottom: 74px;
     transition: width 0.25s ease, min-height 0.25s ease;
   }
-  /* Querformat-Simulation in der Desktop-Handy-Vorschau */
   body.iphone-view-mode.landscape-mode .iphone-device-wrapper {
-    width: 880px;
+    width: 890px;
     min-height: 430px;
     max-height: 88vh;
   }
-  body.iphone-view-mode .ios-statusbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 24px 6px 24px;
-    background: var(--primary);
-    color: #FFFFFF;
-    font-size: 0.78rem;
-    font-weight: 700;
-    position: sticky;
-    top: 0;
-    z-index: 120;
-  }
-  body.iphone-view-mode .ios-dynamic-island {
-    width: 102px;
-    height: 22px;
-    background: #000000;
-    border-radius: 999px;
-  }
 }
-body.iphone-view-mode .mobile-current-week-banner {
-  display: flex;
+
+body.iphone-view-mode .mobile-current-week-banner,
+body.iphone-view-mode .mobile-view-mode-btn {
+  display: inline-flex;
 }
 body.iphone-view-mode header {
   padding: 10px 12px;
@@ -1872,10 +1946,13 @@ body.iphone-view-mode .container {
   width: 100%;
   max-width: 100%;
 }
-/* 2-Spalten-Raster für die Module auf dem Smartphone statt 1 Modul über volle Breite */
 body.iphone-view-mode .dashboard-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+/* Listen-Ansicht auf dem Handy: 1 Spalte untereinander */
+body.iphone-view-mode.mobile-list-view .dashboard-grid {
+  grid-template-columns: 1fr !important;
 }
 body.iphone-view-mode .stat-card {
   padding: 10px 11px;
@@ -2064,7 +2141,6 @@ body.iphone-view-mode .ios-bottom-nav {
 
 /* =========================================================
    13. NATIVES SMARTPHONE-LAYOUT AUF ECHTEN HANDYS (<= 768px)
-       & INTELLIGENTE QUERFORMAT-ANPASSUNG (LANDSCAPE)
    ========================================================= */
 @media (max-width: 768px) {
   body,
@@ -2085,14 +2161,12 @@ body.iphone-view-mode .ios-bottom-nav {
     overflow-x: hidden !important;
     padding-bottom: 0 !important;
   }
-  .ios-statusbar {
-    display: none !important;
-  }
-  .mobile-current-week-banner {
-    display: flex;
+  .mobile-current-week-banner,
+  .mobile-view-mode-btn {
+    display: inline-flex;
   }
   header {
-    padding: 10px 12px;
+    padding: max(10px, env(safe-area-inset-top)) 12px 10px 12px;
     position: sticky;
     top: 0;
   }
@@ -2112,10 +2186,12 @@ body.iphone-view-mode .ios-bottom-nav {
     width: 100%;
     max-width: 100%;
   }
-  /* 2-Spalten-Raster für Module auf dem Smartphone */
   .dashboard-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+  }
+  body.mobile-list-view .dashboard-grid {
+    grid-template-columns: 1fr !important;
   }
   .stat-card {
     padding: 10px 11px;
@@ -2243,7 +2319,8 @@ body.iphone-view-mode .ios-bottom-nav {
 }
 
 /* =========================================================
-   14. HANDY IM QUERFORMAT (LANDSCAPE MODE) - PLATZ EFFEKTIV NUTZEN
+   14. HANDY KOMPAKT-ANSICHT & AUTOMATISCHES QUERFORMAT (LANDSCAPE)
+       (Ansicht bei "Kompakt" exakt wie im Querformat auf dem Handy!)
    ========================================================= */
 @media (max-width: 932px) and (orientation: landscape) {
   header {
@@ -2253,17 +2330,13 @@ body.iphone-view-mode .ios-bottom-nav {
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     gap: 8px !important;
   }
-  .filter-controls {
-    display: grid !important;
-    grid-template-columns: 1fr 200px auto !important;
-    gap: 8px !important;
-  }
-  /* Im Querformat werden die Module innerhalb einer Wochenkarte 2-spaltig nebeneinander dargestellt */
-  tbody tr {
+  tbody tr,
+  thead tr.general-docs-row {
     display: grid !important;
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
-  tbody tr td.week-col {
+  tbody tr td.week-col,
+  thead tr.general-docs-row td:first-child {
     grid-column: 1 / -1 !important;
   }
   .focus-grid {
@@ -2272,25 +2345,41 @@ body.iphone-view-mode .ios-bottom-nav {
   .docs-compact-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
-  .ios-bottom-nav {
-    padding: 4px 12px !important;
-  }
 }
-body.iphone-view-mode.landscape-mode .dashboard-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+
+/* Kompakte Handy-Ansicht (auch im Hochformat wählbar, Layout wie im Querformat) */
+body.mobile-compact-view .dashboard-grid,
+body.iphone-view-mode.landscape-mode .dashboard-grid,
+body.auto-landscape-active .dashboard-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
 }
-body.iphone-view-mode.landscape-mode tbody tr {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+body.mobile-compact-view tbody tr,
+body.mobile-compact-view thead tr.general-docs-row,
+body.iphone-view-mode.landscape-mode tbody tr,
+body.iphone-view-mode.landscape-mode thead tr.general-docs-row,
+body.auto-landscape-active tbody tr {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
-body.iphone-view-mode.landscape-mode tbody tr td.week-col {
-  grid-column: 1 / -1;
+body.mobile-compact-view tbody tr td.week-col,
+body.mobile-compact-view thead tr.general-docs-row td:first-child,
+body.iphone-view-mode.landscape-mode tbody tr td.week-col,
+body.iphone-view-mode.landscape-mode thead tr.general-docs-row td:first-child,
+body.auto-landscape-active tbody tr td.week-col {
+  grid-column: 1 / -1 !important;
 }
-body.iphone-view-mode.landscape-mode .docs-compact-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+body.mobile-compact-view .docs-compact-grid,
+body.iphone-view-mode.landscape-mode .docs-compact-grid,
+body.auto-landscape-active .docs-compact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
-body.iphone-view-mode.landscape-mode .focus-grid {
-  grid-template-columns: 1.2fr 1fr;
+body.mobile-compact-view td {
+  padding: 7px !important;
+  font-size: 0.76rem !important;
+}
+body.mobile-compact-view .task-text {
+  font-size: 0.75rem !important;
 }
 
 /* =========================================================
@@ -2307,11 +2396,11 @@ body.iphone-view-mode.landscape-mode .focus-grid {
   .drag-handle,
   .modal-backdrop,
   .ios-bottom-nav,
-  .ios-statusbar,
   .side-drawer,
   .side-drawer-backdrop,
   .mobile-current-week-banner,
-  .global-loader {
+  .global-loader,
+  .swipe-sync-indicator {
     display: none !important;
   }
   body {

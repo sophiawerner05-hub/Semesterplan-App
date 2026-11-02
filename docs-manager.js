@@ -1,12 +1,10 @@
 /* =========================================================
    UNTERPROGRAMM: DOKUMENTEN- & ORDNERSYSTEM (docs-manager.js)
-   - Exakte Wochen- & Aufgaben-Zuordnung (hebt den Woche-1-Bug auf)
-   - Automatische Umbenennung nach Aufgabenbetitelung (+ "Lösung")
+   - Dauerhafte manuelle Umordnung (manualOverride verhindert Zurückspringen)
+   - Direkt-Bearbeiten-Button (✏️) auch an jedem Dokument im Ordner
+   - Neue Kategorien: "Formelsammlung" & "Zusatz"
+   - Automatische Umbenennung nach Aufgabenbetitelung (+ "Lösung" / "Formelsammlung" / "Zusatz")
    - Ordner-Gruppierung bei mehreren Dokumenten pro Aufgabe
-   - Keine Dokument-Dopplungen
-   - Drag & Drop von Dokumenten direkt auf Aufgaben
-   - Nacheinander-Drag-&-Drop im großen Upload-Fenster
-   - Kompakte Raster-Ansicht im Modulspeicher
    ========================================================= */
 
 const DOCS_DB_NAME = 'semesterplan_files_db';
@@ -17,6 +15,8 @@ const DOC_CATEGORIES = [
   { value: 'Übung', label: '✍️ Übung' },
   { value: 'Lösungen', label: '✅ Lösungen' },
   { value: 'Hörsaalübung', label: '🏛️ Hörsaalübung' },
+  { value: 'Formelsammlung', label: '📐 Formelsammlung' },
+  { value: 'Zusatz', label: '➕ Zusatz' },
   { value: 'Testat / Praktikum', label: '🔬 Testat / Praktikum' },
   { value: 'Klausur / Zusammenfassung', label: '🎓 Klausur / Zusammenfassung' }
 ];
@@ -85,7 +85,7 @@ async function refreshDocsCache() {
 }
 
 /* =========================================================
-   EXAKTER WOCHEN-VERGLEICH (BEHEBT DEN WOCHE-1 / WOCHE-10 BUG)
+   EXAKTER WOCHEN-VERGLEICH
    ========================================================= */
 function extractWeekKeyFromLabel(labelStr) {
   const s = String(labelStr || '').trim().toLowerCase();
@@ -104,7 +104,8 @@ function isSameSemesterWeek(docWeekLabel, targetWeekObj) {
 }
 
 /* =========================================================
-   AUTOMATISCHE DATEI-BETITELUNG NACH AUFGABE (+ "LÖSUNG")
+   AUTOMATISCHE DATEI-BETITELUNG NACH AUFGABE
+   (+ "Lösung", "Formelsammlung", "Zusatz")
    ========================================================= */
 function isSolutionDocument(category, fileName = '', currentTitle = '') {
   if (category === 'Lösungen') return true;
@@ -114,19 +115,25 @@ function isSolutionDocument(category, fileName = '', currentTitle = '') {
 
 function formatDocTitleForTask(taskText, category, fileName = '', siblingIndex = 0, totalSameType = 1) {
   const cleanTask = stripModuleBracketsFromText(taskText || '').trim();
-  if (!cleanTask) return fileName || 'Dokument';
+  if (!cleanTask) return fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Dokument';
   const isSol = isSolutionDocument(category, fileName, '');
   let baseTitle = cleanTask;
+
   if (isSol && !/lösung/i.test(baseTitle)) {
     baseTitle = `${baseTitle} – Lösung`;
+  } else if (category === 'Formelsammlung' && !/formelsammlung/i.test(baseTitle)) {
+    baseTitle = `${baseTitle} – Formelsammlung`;
+  } else if (category === 'Zusatz' && !/zusatz/i.test(baseTitle)) {
+    baseTitle = `${baseTitle} – Zusatz`;
   }
+
   if (totalSameType > 1 && siblingIndex > 0) {
     return `${baseTitle} (${siblingIndex})`;
   }
   return baseTitle;
 }
 
-function recalculateTaskDocTitles(moduleName, weekLabel, taskText) {
+async function recalculateTaskDocTitles(moduleName, weekLabel, taskText) {
   if (!taskText) return;
   const matching = cachedDocsList.filter(d =>
     d.module === moduleName &&
@@ -136,17 +143,25 @@ function recalculateTaskDocTitles(moduleName, weekLabel, taskText) {
   const solutions = matching.filter(d => isSolutionDocument(d.category, d.fileName, d.title));
   const others = matching.filter(d => !isSolutionDocument(d.category, d.fileName, d.title));
 
-  solutions.forEach((doc, idx) => {
+  for (let idx = 0; idx < solutions.length; idx++) {
+    const doc = solutions[idx];
     doc.category = 'Lösungen';
-    doc.title = formatDocTitleForTask(taskText, 'Lösungen', doc.fileName, idx + 1, solutions.length);
-  });
-  others.forEach((doc, idx) => {
-    doc.title = formatDocTitleForTask(taskText, doc.category, doc.fileName, idx + 1, others.length);
-  });
+    if (!doc.customTitleLocked) {
+      doc.title = formatDocTitleForTask(taskText, 'Lösungen', doc.fileName, idx + 1, solutions.length);
+    }
+    await putDocRecordInDB(doc);
+  }
+  for (let idx = 0; idx < others.length; idx++) {
+    const doc = others[idx];
+    if (!doc.customTitleLocked) {
+      doc.title = formatDocTitleForTask(taskText, doc.category, doc.fileName, idx + 1, others.length);
+    }
+    await putDocRecordInDB(doc);
+  }
 }
 
 /* =========================================================
-   INTELLIGENTE ZUORDNUNG ZU MODUL, WOCHE & KONKRETER AUFGABE
+   INTELLIGENTE ZUORDNUNG ZU MODUL, WOCHE & AUFGABE
    ========================================================= */
 function normalizeToken(rawToken) {
   const s = String(rawToken || '')
@@ -200,32 +215,27 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
     { mod: 'Mathe 2', regex: /\b(mathe|hm\s*2|komplexe|euler|gauß|gauss|matrizen|determinante|eigenwert|hesse|taylor|fubini)\b/i },
     { mod: 'CAD', regex: /\b(cad|testat|toleranz|passung|oberfl|wellenlagerung|maschinenelemente|typ\s*[a-j])\b/i }
   ];
-  if (!fallbackModule) {
-    for (const mp of modPatterns) {
-      if (mp.regex.test(cleanName)) {
-        detectedModule = mp.mod;
-        break;
-      }
-    }
-  } else {
-    for (const mp of modPatterns) {
-      if (mp.regex.test(cleanName)) {
-        detectedModule = mp.mod;
-        break;
-      }
+  for (const mp of modPatterns) {
+    if (mp.regex.test(cleanName)) {
+      detectedModule = mp.mod;
+      break;
     }
   }
 
   let detectedCategory = fallbackCategory || 'Vorlesung';
   if (/(lösung|loesung|musterlösung|musterloesung|solution|\blös\b|\bloes\b)/i.test(cleanName)) {
     detectedCategory = 'Lösungen';
+  } else if (/(formelsammlung|formeln|merkblatt|cheatsheet)/i.test(cleanName)) {
+    detectedCategory = 'Formelsammlung';
+  } else if (/(zusatz|bonus|ergänzung|ergaenzung|extra|beispiel)/i.test(cleanName)) {
+    detectedCategory = 'Zusatz';
   } else if (/(hsü|hsu|hörsaal|hoersaal)/i.test(cleanName)) {
     detectedCategory = 'Hörsaalübung';
   } else if (/(üb|ueb|übung|uebung|blatt|aufgabe)/i.test(cleanName)) {
     detectedCategory = 'Übung';
   } else if (/(testat|praktikum|labor)/i.test(cleanName)) {
     detectedCategory = 'Testat / Praktikum';
-  } else if (/(klausur|altklausur|zusammenfassung|formelsammlung|skript)/i.test(cleanName)) {
+  } else if (/(klausur|altklausur|zusammenfassung|skript)/i.test(cleanName)) {
     detectedCategory = 'Klausur / Zusammenfassung';
   } else if (/(vorlesung|folien|\bv\s*0*\d+|\ble\s*0*\d+)/i.test(cleanName)) {
     detectedCategory = 'Vorlesung';
@@ -234,6 +244,16 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
   let detectedWeekLabel = fallbackWeekLabel || '';
   let detectedTaskText = preselectedTaskText || '';
   let matchReason = 'Standard-Auswahl';
+
+  if (detectedCategory === 'Formelsammlung' && !fallbackWeekLabel && !preselectedTaskText) {
+    return {
+      module: detectedModule,
+      category: detectedCategory,
+      weekLabel: '',
+      taskText: '',
+      reason: 'Formelsammlung → Oben in Modulspalte'
+    };
+  }
 
   const tokens = extractNormalizedTokens(cleanName);
   let bestScore = 0;
@@ -302,7 +322,7 @@ function analyzeFileForSmartSorting(fileName, fallbackModule, fallbackCategory, 
 }
 
 /* =========================================================
-   DUPLIKAT-BEREINIGUNG & KORREKTUR FALSCHER ZUORDNUNGEN
+   DUPLIKAT-BEREINIGUNG (RESPEKTIERT MANUELLE UMORDNUNGEN!)
    ========================================================= */
 function getDocUniqueSignature(doc) {
   const cleanFile = String(doc.fileName || doc.title || '').trim().toLowerCase();
@@ -332,7 +352,11 @@ async function sanitizeAndDeduplicateDocsSilent() {
     }
     seenSignatures.set(sig, doc.id);
 
-    // Prüfen, ob das Dokument eine klare Aufgabe hat oder neu zugeordnet werden kann
+    // WICHTIG: Wenn der Nutzer das Dokument manuell bearbeitet/umgeordnet hat, NIEMALS überschreiben!
+    if (doc.manualOverride) {
+      continue;
+    }
+
     if (!doc.taskText && doc.fileName) {
       const guess = analyzeFileForSmartSorting(doc.fileName, doc.module, doc.category, doc.weekLabel);
       if (guess.taskText) {
@@ -342,20 +366,12 @@ async function sanitizeAndDeduplicateDocsSilent() {
         await putDocRecordInDB(doc);
         updatedCount++;
       } else if (doc.weekLabel && /^woche\s*1\b/i.test(doc.weekLabel) && !/\b(le\s*0*2|v1|üb\s*0*1|üb\s*0*2)\b/i.test(doc.fileName)) {
-        // Dokumente wie LE01 (Einführung), die keinen Termin in Woche 1 haben, nach oben in die Modulspalte legen
         if (/\ble\s*0*1\b/i.test(doc.fileName)) {
           doc.weekLabel = '';
           doc.taskText = '';
           await putDocRecordInDB(doc);
           updatedCount++;
         }
-      }
-    } else if (doc.taskText) {
-      const expectedTitle = formatDocTitleForTask(doc.taskText, doc.category, doc.fileName);
-      if (!doc.title || doc.title === doc.fileName) {
-        doc.title = expectedTitle;
-        await putDocRecordInDB(doc);
-        updatedCount++;
       }
     }
   }
@@ -375,21 +391,6 @@ async function sanitizeAndDeduplicateDocsSilent() {
   return toDeleteIds.length;
 }
 
-async function removeDuplicateDocuments(showFeedback = true) {
-  showLoading('Prüfe auf doppelte Dokumente & korrigiere Zuordnungen...');
-  try {
-    const removed = await sanitizeAndDeduplicateDocsSilent();
-    renderAll();
-    if (showFeedback) {
-      showToast(removed > 0
-        ? `🧹 ${removed} doppelte Datei(en) entfernt & Zuordnung aktualisiert!`
-        : '✅ Keine Dopplungen gefunden – jedes Dokument existiert genau einmal.');
-    }
-  } finally {
-    hideLoading();
-  }
-}
-
 /* =========================================================
    ABFRAGE DER DOKUMENTE FÜR AUFGABEN, WOCHEN & MODUL-KOPFZEILE
    ========================================================= */
@@ -405,12 +406,13 @@ function getDocsForTask(weekIdx, shortName, taskText) {
     if (doc.module !== shortName) return false;
     if (!isSameSemesterWeek(doc.weekLabel, week)) return false;
 
-    // 1. Exakte Aufgaben-Bindung (taskText ist am Dokument gespeichert)
-    if (doc.taskText) {
-      return stripModuleBracketsFromText(doc.taskText, shortName).trim().toLowerCase() === cleanTargetTask;
+    // 1. Wenn das Dokument eine gespeicherte Aufgaben-Zuordnung hat oder manuell umgeordnet wurde:
+    if (doc.manualOverride || (doc.taskText && doc.taskText.trim() !== '')) {
+      const assignedTask = stripModuleBracketsFromText(doc.taskText || '', shortName).trim().toLowerCase();
+      return assignedTask !== '' && assignedTask === cleanTargetTask;
     }
 
-    // 2. Token-Übereinstimmung innerhalb derselben Woche (z. B. HSÜ 9, LE 3, ÜB 4)
+    // 2. Automatische Token-Übereinstimmung innerhalb derselben Woche (nur falls noch nicht manuell festgesetzt)
     const docTokens = extractNormalizedTokens(`${doc.fileName || ''} ${doc.title || ''}`);
     if (taskTokens.length > 0 && docTokens.length > 0) {
       return taskTokens.some(tok => docTokens.includes(tok));
@@ -441,7 +443,7 @@ function getGeneralModuleDocs(shortName) {
 }
 
 /* =========================================================
-   RENDERING VON AUFGABEN-DOKUMENTEN (EINZEL-CHIP ODER ORDNER)
+   RENDERING VON AUFGABEN-DOKUMENTEN (MIT DIREKT-UMORDNEN-BUTTON ✏️)
    ========================================================= */
 function toggleTaskFolder(event, folderId) {
   event.stopPropagation();
@@ -449,40 +451,51 @@ function toggleTaskFolder(event, folderId) {
   if (box) box.classList.toggle('open');
 }
 
+function getCategoryIcon(doc) {
+  if (isSolutionDocument(doc.category, doc.fileName, doc.title)) return '✅';
+  if (doc.category === 'Formelsammlung') return '📐';
+  if (doc.category === 'Zusatz') return '➕';
+  return '📄';
+}
+
 function buildSingleDocChipHtml(doc, isDraggable = false) {
   const isSol = isSolutionDocument(doc.category, doc.fileName, doc.title);
-  const icon = isSol ? '✅' : '📄';
+  const isFormula = doc.category === 'Formelsammlung';
+  const icon = getCategoryIcon(doc);
   const dragAttrs = isDraggable
     ? `draggable="true" ondragstart="handleDocChipDragStart(event, '${escapeAttr(doc.id)}')"`
     : '';
-  const extraClass = `${isSol ? 'solution-chip' : ''} ${isDraggable ? 'draggable-doc-chip' : ''}`;
-  const tooltip = isDraggable
-    ? `${doc.title} – Ziehe mich per Drag & Drop auf die gewünschte Aufgabe oder klicke zur Vorschau`
-    : `${doc.category}: ${doc.title} (Klicken zur Vorschau)`;
+  const groupClass = `${isSol ? 'solution-chip' : ''} ${isFormula ? 'formula-chip' : ''}`;
+  const tooltip = `${doc.category}: ${doc.title} (Klicken zur Vorschau, ✏️ zum Umordnen)`;
 
   return `
-    <button type="button"
-            class="task-doc-chip ${extraClass}"
-            ${dragAttrs}
-            onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}')"
-            title="${escapeAttr(tooltip)}">
-      <span>${icon}</span>
-      <span class="task-doc-chip-title">${escapeHtml(doc.title)}</span>
-    </button>
+    <div class="task-doc-chip-group ${groupClass}" ${dragAttrs}>
+      <button type="button"
+              class="task-doc-chip"
+              onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}')"
+              title="${escapeAttr(tooltip)}">
+        <span>${icon}</span>
+        <span class="task-doc-chip-title">${escapeHtml(doc.title)}</span>
+      </button>
+      <button type="button"
+              class="chip-edit-btn"
+              onclick="event.stopPropagation(); openEditDocModal('${escapeAttr(doc.id)}', event)"
+              title="Dokument-Zuordnung (Modul, Woche, Aufgabe, Kategorie) direkt umordnen">
+        ✏️
+      </button>
+    </div>
   `;
 }
 
 function renderTaskDocChipsHtml(docs, folderContextKey = '') {
   if (!docs || docs.length === 0) return '';
-  // Einzelnes Dokument direkt als Chip anzeigen
   if (docs.length === 1) {
-    return `<div class="task-docs-row">${buildSingleDocChipHtml(docs[0], false)}</div>`;
+    return `<div class="task-docs-row">${buildSingleDocChipHtml(docs[0], true)}</div>`;
   }
-  // Mehrere Dokumente einer Aufgabe automatisch in einem Ordner zusammenlegen!
   const folderId = `taskFolder_${folderContextKey || docs[0].id}`;
   const solCount = docs.filter(d => isSolutionDocument(d.category, d.fileName, d.title)).length;
   const solHint = solCount > 0 ? ` (${solCount}× Lösung)` : '';
-  const chipsHtml = docs.map(d => buildSingleDocChipHtml(d, false)).join('');
+  const chipsHtml = docs.map(d => buildSingleDocChipHtml(d, true)).join('');
 
   return `
     <div class="task-folder-box" id="${escapeAttr(folderId)}" onclick="event.stopPropagation()">
@@ -502,7 +515,7 @@ function renderUnassignedWeekDocsHtml(docs) {
   const chips = docs.map(d => buildSingleDocChipHtml(d, true)).join('');
   return `
     <div class="cell-docs-footer">
-      <span class="unassigned-hint-label">🤚 Nicht zugeordnet (auf Aufgabe ziehen):</span>
+      <span class="unassigned-hint-label">🤚 Auf Aufgabe ziehen oder ✏️ klicken:</span>
       <div class="task-docs-row">${chips}</div>
     </div>
   `;
@@ -524,7 +537,7 @@ function renderGeneralModuleDocsCellHtml(shortName) {
     return `
       <div style="display:flex; flex-direction:column; gap:4px;">
         <div class="task-docs-row">${chips}</div>
-        <button type="button" class="stat-doc-btn" style="align-self:flex-start;" onclick="openUploadDocModal('${escapeAttr(shortName)}', '')">+ Allgemeine Datei</button>
+        <button type="button" class="stat-doc-btn" style="align-self:flex-start;" onclick="openUploadDocModal('${escapeAttr(shortName)}', '')">+ Datei</button>
       </div>
     `;
   }
@@ -548,7 +561,7 @@ function renderGeneralModuleDocsCellHtml(shortName) {
 function handleDocChipDragStart(event, docId) {
   event.stopPropagation();
   draggedDocId = docId;
-  draggedTaskInfo = null; // Verhindert Konflikt mit Aufgaben-Drag
+  draggedTaskInfo = null;
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('text/plain', `DOC:${docId}`);
 }
@@ -564,9 +577,15 @@ async function assignDocToTaskByDragDrop(docId, weekIdx, shortName, taskItemIdx)
     doc.module = shortName;
     doc.weekLabel = week.weekLabel.replace(/\n/g, ' ');
     doc.taskText = stripModuleBracketsFromText(taskItem.text, shortName);
-    recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
+    doc.manualOverride = true;
+    doc.customTitleLocked = false;
+    doc.needsDriveUpdate = true;
+    doc.updatedAt = Date.now();
+
     await putDocRecordInDB(doc);
-    if (typeof syncSingleDocMetadataToDrive === 'function') {
+    await recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
+
+    if (typeof syncSingleDocMetadataToDrive === 'function' && typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       await syncSingleDocMetadataToDrive(doc);
     }
     await refreshDocsCache();
@@ -578,15 +597,15 @@ async function assignDocToTaskByDragDrop(docId, weekIdx, shortName, taskItemIdx)
 }
 
 /* =========================================================
-   VERGRÖSSERTES UPLOAD-MODAL MIT SEQUENTIELLEM DRAG & DROP
+   UPLOAD-MODAL MIT SEQUENTIELLEM DRAG & DROP
    ========================================================= */
 function buildTasksOptionsForWeekAndModule(moduleName, weekLabel, selectedTaskText = '') {
   const week = appState.weeks.find(w => isSameSemesterWeek(weekLabel, w));
   const tasks = week?.cells?.[moduleName] || [];
-  let html = `<option value="">-- Ohne feste Aufgabe (in Woche zum Ziehen ablegen) --</option>`;
+  let html = `<option value="">-- Ohne feste Aufgabe (in Woche ablegen) --</option>`;
   tasks.forEach(t => {
     const cleanTxt = stripModuleBracketsFromText(t.text, moduleName);
-    const isSel = selectedTaskText && cleanTxt.toLowerCase() === selectedTaskText.toLowerCase();
+    const isSel = selectedTaskText && cleanTxt.trim().toLowerCase() === selectedTaskText.trim().toLowerCase();
     html += `<option value="${escapeAttr(cleanTxt)}" ${isSel ? 'selected' : ''}>🎯 ${escapeHtml(cleanTxt)}</option>`;
   });
   return html;
@@ -620,8 +639,10 @@ function openUploadDocModal(preselectedMod = null, preselectedWeekLabel = null, 
   }
 
   const fileInput = document.getElementById('docFileInput');
-  if (fileInput) fileInput.value = '';
-  fileInput.dataset.preselectedTask = preselectedTaskText || '';
+  if (fileInput) {
+    fileInput.value = '';
+    fileInput.dataset.preselectedTask = preselectedTaskText || '';
+  }
 
   pendingUploadPlans = [];
   renderSmartUploadPreview();
@@ -682,7 +703,6 @@ function removeSinglePendingPlan(idx) {
   renderSmartUploadPreview();
 }
 
-// Fügt neue Dateien nacheinander zur bestehenden Upload-Liste hinzu (kein Überschreiben!)
 function handleDocFilesSelected(fileListObj) {
   const incomingFiles = Array.from(fileListObj || document.getElementById('docFileInput')?.files || []);
   if (incomingFiles.length === 0) return;
@@ -749,7 +769,7 @@ function renderSmartUploadPreview() {
   if (countLabel) {
     countLabel.textContent = pendingUploadPlans.length === 0
       ? 'Noch keine Dateien in der Warteschlange'
-      : `📋 ${pendingUploadPlans.length} Datei(en) bereit zum Speichern (du kannst weitere Dateien hineinziehen):`;
+      : `📋 ${pendingUploadPlans.length} Datei(en) bereit zum Speichern:`;
   }
   if (clearBtn) {
     clearBtn.style.display = pendingUploadPlans.length > 0 ? 'inline-flex' : 'none';
@@ -849,14 +869,14 @@ async function handleSaveUploadedDocs() {
     return;
   }
 
-  showLoading(`Speichere ${pendingUploadPlans.length} Dokument(e) & synchronisiere mit Google Drive...`);
+  startCancelableOperation(`Speichere ${pendingUploadPlans.length} Dokument(e) & lade neue Dateien zu Drive hoch...`);
   try {
     let savedCount = 0;
     for (let i = 0; i < pendingUploadPlans.length; i++) {
+      if (isCurrentActionCancelled()) break;
       const plan = pendingUploadPlans[i];
       const file = plan.file;
 
-      // Duplikat-Schutz vor dem Speichern
       const duplicate = cachedDocsList.find(d =>
         d.module === plan.module &&
         (d.fileName || '').toLowerCase() === file.name.toLowerCase() &&
@@ -880,17 +900,19 @@ async function handleSaveUploadedDocs() {
         mimeType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
         dataUrl: dataUrl,
-        uploadedAt: Date.now()
+        manualOverride: true,
+        needsDriveUpdate: true,
+        uploadedAt: Date.now(),
+        updatedAt: Date.now()
       };
 
       await putDocRecordInDB(docRecord);
       cachedDocsList.push(docRecord);
 
       if (docRecord.taskText) {
-        recalculateTaskDocTitles(docRecord.module, docRecord.weekLabel, docRecord.taskText);
+        await recalculateTaskDocTitles(docRecord.module, docRecord.weekLabel, docRecord.taskText);
       }
 
-      // Automatischer Upload in den Google-Drive-Synchronisationsordner (für Handy-Zugriff)
       if (typeof uploadLocalDocToGoogleDrive === 'function' && typeof isGoogleConnected === 'function' && isGoogleConnected()) {
         try {
           await uploadLocalDocToGoogleDrive(docRecord);
@@ -906,7 +928,9 @@ async function handleSaveUploadedDocs() {
     pendingUploadPlans = [];
     closeModal('uploadDocModal');
     renderAll();
-    showToast(`📁 ${savedCount} Dokument(e) gespeichert & nach Aufgaben benannt!`);
+    if (!isCurrentActionCancelled()) {
+      showToast(`📁 ${savedCount} neue Datei(en) gespeichert & zugeordnet!`);
+    }
   } catch (e) {
     console.error('Fehler beim Speichern des Dokuments:', e);
     showToast('❌ Fehler beim Speichern der Datei.');
@@ -917,7 +941,7 @@ async function handleSaveUploadedDocs() {
 
 async function deleteModuleDoc(docId) {
   const doc = cachedDocsList.find(d => d.id === docId);
-  showLoading('Entferne Dokument...');
+  startCancelableOperation('Entferne Dokument...');
   try {
     if (doc?.driveFileId && typeof deleteDocFromGoogleDrive === 'function' && typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       await deleteDocFromGoogleDrive(doc.driveFileId);
@@ -934,7 +958,7 @@ async function deleteModuleDoc(docId) {
 }
 
 /* =========================================================
-   NACHTRÄGLICHES BEARBEITEN (INKL. AUFGABEN-AUSWAHL & AUTO-RENAME)
+   REPARIERTES BEARBEITEN & UMORDNEN VON DOKUMENTEN
    ========================================================= */
 function ensureEditDocModalExists() {
   if (document.getElementById('editDocModal')) return;
@@ -944,7 +968,7 @@ function ensureEditDocModalExists() {
   modalBackdrop.innerHTML = `
     <div class="modal">
       <div class="modal-header">
-        <h3>✏️ Dokument &amp; Aufgaben-Zuordnung ändern</h3>
+        <h3>✏️ Dokument-Zuordnung umordnen</h3>
         <button class="modal-close" onclick="closeModal('editDocModal')">&times;</button>
       </div>
       <div class="modal-body">
@@ -955,7 +979,7 @@ function ensureEditDocModalExists() {
             <select id="editDocModuleSelect" class="select-box full-width" onchange="updateEditDocTaskDropdown()"></select>
           </div>
           <div class="form-group">
-            <label for="editDocCategorySelect">Kategorie (fügt bei „Lösungen“ das Wort Lösung an)</label>
+            <label for="editDocCategorySelect">Kategorie (inkl. Formelsammlung &amp; Zusatz)</label>
             <select id="editDocCategorySelect" class="select-box full-width" onchange="autoUpdateEditDocTitlePreview()"></select>
           </div>
         </div>
@@ -964,21 +988,28 @@ function ensureEditDocModalExists() {
           <select id="editDocWeekSelect" class="select-box full-width" onchange="updateEditDocTaskDropdown()"></select>
         </div>
         <div class="form-group" style="margin-top: 14px;">
-          <label for="editDocTaskSelect">Zugehörige Aufgabe (passt Dateinamen automatisch an)</label>
+          <label for="editDocTaskSelect">Zugehörige Aufgabe (wird sofort dorthin verschoben)</label>
           <select id="editDocTaskSelect" class="select-box full-width" onchange="autoUpdateEditDocTitlePreview()"></select>
         </div>
         <div class="form-group" style="margin-top: 14px;">
           <label for="editDocTitleInput">Anzeigename des Dokuments</label>
-          <input type="text" id="editDocTitleInput" class="full-width" onkeydown="if(event.key==='Enter') saveEditedDoc()">
+          <input type="text" id="editDocTitleInput" class="full-width" oninput="this.dataset.userEdited='true'" onkeydown="if(event.key==='Enter') saveEditedDoc()">
         </div>
       </div>
       <div class="modal-footer">
+        <button class="btn btn-danger-outline" style="margin-right:auto;" onclick="deleteDocFromEditModal()">🗑️ Löschen</button>
         <button class="btn btn-outline" onclick="closeModal('editDocModal')">Abbrechen</button>
-        <button class="btn btn-primary" onclick="saveEditedDoc()">💾 Zuordnung speichern</button>
+        <button class="btn btn-primary" onclick="saveEditedDoc()">💾 Jetzt umordnen &amp; speichern</button>
       </div>
     </div>
   `;
   document.body.appendChild(modalBackdrop);
+}
+
+function deleteDocFromEditModal() {
+  const docId = document.getElementById('editDocIdInput')?.value;
+  closeModal('editDocModal');
+  if (docId) deleteModuleDoc(docId);
 }
 
 function updateEditDocTaskDropdown(preselectedTask = null) {
@@ -986,8 +1017,10 @@ function updateEditDocTaskDropdown(preselectedTask = null) {
   const weekLabel = document.getElementById('editDocWeekSelect')?.value;
   const taskSel = document.getElementById('editDocTaskSelect');
   if (!taskSel) return;
-  taskSel.innerHTML = buildTasksOptionsForWeekAndModule(mod, weekLabel, preselectedTask || '');
+  taskSel.innerHTML = buildTasksOptionsForWeekAndModule(mod, weekLabel, preselectedTask !== null ? preselectedTask : '');
   if (preselectedTask === null) {
+    const titleInp = document.getElementById('editDocTitleInput');
+    if (titleInp) titleInp.dataset.userEdited = 'false';
     autoUpdateEditDocTitlePreview();
   }
 }
@@ -998,8 +1031,13 @@ function autoUpdateEditDocTitlePreview() {
   const taskText = document.getElementById('editDocTaskSelect')?.value || '';
   const cat = document.getElementById('editDocCategorySelect')?.value || 'Vorlesung';
   const titleInp = document.getElementById('editDocTitleInput');
-  if (titleInp && taskText) {
+  if (!titleInp) return;
+
+  if (taskText) {
     titleInp.value = formatDocTitleForTask(taskText, cat, doc?.fileName || '');
+    titleInp.dataset.userEdited = 'false';
+  } else if (doc?.fileName && titleInp.dataset.userEdited !== 'true') {
+    titleInp.value = doc.fileName.replace(/\.[^/.]+$/, '');
   }
 }
 
@@ -1046,7 +1084,10 @@ function openEditDocModal(docId, event = null) {
   }
 
   updateEditDocTaskDropdown(doc.taskText || '');
-  if (titleInp) titleInp.value = doc.title || doc.fileName || '';
+  if (titleInp) {
+    titleInp.value = doc.title || doc.fileName || '';
+    titleInp.dataset.userEdited = 'false';
+  }
   openModal('editDocModal');
 }
 
@@ -1055,43 +1096,65 @@ async function saveEditedDoc() {
   const doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) return;
 
+  const oldModule = doc.module;
+  const oldWeek = doc.weekLabel;
+  const oldTask = doc.taskText;
+
   const newMod = document.getElementById('editDocModuleSelect')?.value || doc.module;
   const newCat = document.getElementById('editDocCategorySelect')?.value || doc.category;
   const newWeek = document.getElementById('editDocWeekSelect')?.value || '';
   const newTask = document.getElementById('editDocTaskSelect')?.value || '';
-  let newTitle = (document.getElementById('editDocTitleInput')?.value || '').trim();
+  const titleInp = document.getElementById('editDocTitleInput');
+  let newTitle = (titleInp?.value || '').trim();
+  const userTypedCustomTitle = titleInp?.dataset?.userEdited === 'true';
 
-  if (newTask) {
+  if (newTask && !userTypedCustomTitle) {
     newTitle = formatDocTitleForTask(newTask, newCat, doc.fileName);
+  } else if (!newTask && !userTypedCustomTitle && doc.fileName) {
+    newTitle = doc.fileName.replace(/\.[^/.]+$/, '');
   }
 
+  // Speichere die neue Zuordnung mit manualOverride = true, damit das Dokument garantiert umgeordnet bleibt!
   doc.module = newMod;
   doc.category = newCat;
   doc.weekLabel = newWeek;
   doc.taskText = newTask;
   doc.title = newTitle || doc.fileName || doc.title;
+  doc.manualOverride = true;
+  doc.customTitleLocked = userTypedCustomTitle;
+  doc.needsDriveUpdate = true;
+  doc.updatedAt = Date.now();
 
-  if (doc.taskText) {
-    recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
-  }
-
-  showLoading('Speichere neue Zuordnung...');
+  startCancelableOperation('Ordne Dokument um & aktualisiere Ansicht...');
   try {
     await putDocRecordInDB(doc);
-    if (typeof syncSingleDocMetadataToDrive === 'function') {
+
+    if (oldTask && (oldTask !== newTask || oldWeek !== newWeek || oldModule !== newMod)) {
+      await recalculateTaskDocTitles(oldModule, oldWeek, oldTask);
+    }
+    if (doc.taskText) {
+      await recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
+    }
+
+    if (typeof syncSingleDocMetadataToDrive === 'function' && typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       await syncSingleDocMetadataToDrive(doc);
     }
+
     await refreshDocsCache();
     closeModal('editDocModal');
     renderAll();
-    showToast(`✅ Gespeichert als „${doc.title}“!`);
+
+    const targetPlace = newTask
+      ? `${newMod} → ${newTask}`
+      : (newWeek ? `${newMod} (${newWeek.split('(')[0].trim()})` : `${newMod} (Allgemein oben)`);
+    showToast(`✅ Dokument erfolgreich umgeordnet nach: ${targetPlace}`);
   } finally {
     hideLoading();
   }
 }
 
 /* =========================================================
-   DOKUMENT-VORSCHAU (INKL. ABRUF VON GOOGLE DRIVE AUF DEM HANDY)
+   DOKUMENT-VORSCHAU
    ========================================================= */
 async function previewModuleDoc(docId) {
   const doc = cachedDocsList.find(d => d.id === docId);
@@ -1111,13 +1174,12 @@ async function previewModuleDoc(docId) {
     dlBtn.parentElement.insertBefore(editBtn, dlBtn.parentElement.firstChild);
   }
   if (editBtn) {
-    editBtn.textContent = '✏️ Zuordnung & Aufgabe ändern';
+    editBtn.textContent = '✏️ Zuordnung & Aufgabe umordnen';
     editBtn.onclick = () => openEditDocModal(doc.id);
   }
 
-  // Falls Datei vom Laptop auf Google Drive geladen wurde und auf dem Handy zum ersten Mal geöffnet wird:
   if (!doc.dataUrl && doc.driveFileId && typeof ensureDriveDocContentLoaded === 'function') {
-    showLoading('Lade Datei aus deinem Google Drive...');
+    startCancelableOperation('Lade Datei aus deinem Google Drive...');
     try {
       await ensureDriveDocContentLoaded(doc);
     } finally {
@@ -1157,23 +1219,31 @@ async function previewModuleDoc(docId) {
 /* =========================================================
    KOMPAKTE RASTER- & ORDNER-ANSICHT IM TAB "MODUL-DOKUMENTE"
    ========================================================= */
+function getCategoryBadgeClass(doc) {
+  if (isSolutionDocument(doc.category, doc.fileName, doc.title)) return 'doc-cat-solution';
+  if (doc.category === 'Formelsammlung') return 'doc-cat-formula';
+  if (doc.category === 'Zusatz') return 'doc-cat-extra';
+  return '';
+}
+
 function renderCompactDocItemHtml(doc) {
-  const isSol = isSolutionDocument(doc.category, doc.fileName, doc.title);
+  const icon = getCategoryIcon(doc);
+  const badgeClass = getCategoryBadgeClass(doc);
   const cloudBadge = doc.driveFileId ? `<span title="In Google Drive synchronisiert">☁️</span>` : '';
   return `
     <div class="doc-compact-item">
       <div class="doc-item-info">
         <div class="doc-item-title" title="${escapeAttr(doc.title + ' (' + (doc.fileName || '') + ')')}">
-          ${isSol ? '✅' : '📄'} ${escapeHtml(doc.title)} ${cloudBadge}
+          ${icon} ${escapeHtml(doc.title)} ${cloudBadge}
         </div>
         <div class="doc-item-meta">
-          <span class="doc-cat-badge ${isSol ? 'doc-cat-solution' : ''}">${escapeHtml(doc.category)}</span>
+          <span class="doc-cat-badge ${badgeClass}">${escapeHtml(doc.category)}</span>
           <span>• ${formatFileSize(doc.sizeBytes)}</span>
         </div>
       </div>
       <div class="doc-item-actions">
         <button class="btn btn-outline btn-sm" onclick="previewModuleDoc('${escapeAttr(doc.id)}')" title="Vorschau">👁️</button>
-        <button class="btn btn-outline btn-sm" onclick="openEditDocModal('${escapeAttr(doc.id)}', event)" title="Aufgabe / Woche ändern">✏️</button>
+        <button class="btn btn-outline btn-sm" onclick="openEditDocModal('${escapeAttr(doc.id)}', event)" title="Aufgabe / Woche umordnen">✏️</button>
         ${doc.dataUrl ? `<a class="btn btn-outline btn-sm" href="${doc.dataUrl}" download="${escapeAttr(doc.fileName || doc.title)}" title="Download">⬇️</a>` : ''}
         <button class="btn btn-danger-outline btn-sm" onclick="deleteModuleDoc('${escapeAttr(doc.id)}')" title="Löschen">🗑️</button>
       </div>
@@ -1211,7 +1281,6 @@ function renderModuleDocsView() {
       `;
     }
 
-    // Gruppiere Dokumente übersichtlich in Ordner pro Aufgabe / Woche
     const groupsMap = new Map();
     for (const doc of docsForMod) {
       const weekShort = doc.weekLabel ? doc.weekLabel.split('(')[0].trim() : '📌 Ohne Wochenbezug';

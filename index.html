@@ -11,24 +11,22 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
 </head>
 <body>
-  <!-- GLOBALER LADEKREIS (SPINNER) BEI LADE- & SYNC-VORGÄNGEN -->
+  <!-- GLOBALER LADEKREIS (SPINNER) INKL. ABBRECHEN-TASTE FÜR LAUFENDE AKTIONEN -->
   <div id="globalLoadingIndicator" class="global-loader" role="status" aria-live="polite">
     <div class="spinner-ring"></div>
     <span id="globalLoadingText">Lädt...</span>
+    <button type="button" class="loader-cancel-btn" onclick="cancelCurrentRunningAction()" title="Gerade ausgeführte Aktion sofort abbrechen">
+      ✖ Abbrechen
+    </button>
   </div>
 
-  <!-- IPHONE / MOBILE WRAPPER -->
-  <div id="iphoneDeviceWrapper" class="iphone-device-wrapper">
-    <!-- iOS Dynamic Island & Statusbar (Sichtbar in Desktop-iPhone-Vorschau) -->
-    <div class="ios-statusbar">
-      <span class="ios-time" id="iosClock">09:41</span>
-      <div class="ios-dynamic-island"></div>
-      <div class="ios-status-icons">
-        <span>5G</span>
-        <span>🔋</span>
-      </div>
-    </div>
+  <!-- SWIPE-TO-SYNC BANNER FÜR IPAD & HANDY -->
+  <div id="swipeSyncIndicator" class="swipe-sync-indicator">
+    <span>🔄 Loslassen zum Synchronisieren &amp; Aktualisieren...</span>
+  </div>
 
+  <!-- IPHONE / MOBILE WRAPPER (OHNE STÖRENDE ISLAND-BAR) -->
+  <div id="iphoneDeviceWrapper" class="iphone-device-wrapper">
     <!-- SEITEN-MENÜLEISTE (SLIDE-OUT NAVIGATION DRAWER FÜR HANDY & DESKTOP) -->
     <div class="side-drawer-backdrop" id="sideDrawerBackdrop" onclick="closeSideDrawer()"></div>
     <aside class="side-drawer" id="sideMenuDrawer" aria-label="Seitenmenü">
@@ -57,7 +55,18 @@
           <span>📧</span> <span>Wochen-Briefing (E-Mail)</span>
         </button>
 
-        <div class="drawer-section-title">Aktionen</div>
+        <div class="drawer-section-title">Handy-Darstellung &amp; Sync</div>
+        <button class="drawer-item" onclick="toggleMobileLayoutStyle(); closeSideDrawer();">
+          <span>📐</span> <span id="drawerMobileLayoutLabel">Handy-Ansicht: Kompakt ⇄ Liste</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); triggerManualDriveSync();">
+          <span>☁️</span> <span>Google Drive jetzt synchronisieren</span>
+        </button>
+        <button class="drawer-item" onclick="closeSideDrawer(); handleGooglePrimaryClick();">
+          <span>🔄</span> <span>Tasks &amp; Kalender synchronisieren</span>
+        </button>
+
+        <div class="drawer-section-title">Weitere Aktionen</div>
         <button class="drawer-item" onclick="closeSideDrawer(); openTaskModal();">
           <span>➕</span> <span>Neue Aufgabe anlegen</span>
         </button>
@@ -65,10 +74,7 @@
           <span>📤</span> <span>Dokumente hochladen (Drag &amp; Drop)</span>
         </button>
         <button class="drawer-item" onclick="closeSideDrawer(); openGoogleDrivePickerModal();">
-          <span>☁️</span> <span>Aus Google Drive importieren</span>
-        </button>
-        <button class="drawer-item" onclick="closeSideDrawer(); handleGooglePrimaryClick();">
-          <span>🔄</span> <span>Mit Google &amp; Drive synchronisieren</span>
+          <span>📂</span> <span>Aus Google Drive importieren</span>
         </button>
         <button class="drawer-item" onclick="closeSideDrawer(); openPdfModal();">
           <span>🖨️</span> <span>Farbiger PDF-Export</span>
@@ -76,11 +82,8 @@
         <button class="drawer-item" onclick="closeSideDrawer(); toggleIphoneView();">
           <span>📱</span> <span id="drawerIphoneToggleText">Handy-Vorschau umschalten</span>
         </button>
-        <button class="drawer-item" onclick="closeSideDrawer(); toggleLandscapePreview();">
-          <span>🔄</span> <span>Handy Hoch-/Querformat testen</span>
-        </button>
         <button class="drawer-item" onclick="closeSideDrawer(); openModal('googleSetupModal');">
-          <span>⚙️</span> <span>Google-Kopplung &amp; Backup</span>
+          <span>⚙️</span> <span>Google-Kopplung &amp; Einstellungen</span>
         </button>
 
         <div class="drawer-section-title">Farbdesign (Helle &amp; Dunkle Schemata)</div>
@@ -104,13 +107,17 @@
             ☰
           </button>
           <span class="brand-icon">🎓</span>
-          <div>
+          <div style="min-width:0; flex:1;">
             <div class="brand-title-row">
               <h1>Semesterplan App</h1>
               <span class="brand-badge" id="connectionBadge">Lokal &amp; Offline-fähig</span>
             </div>
-            <div class="brand-subtitle">Synchron mit Google Tasks, Kalender, Gmail &amp; geräteübergreifendem Google-Drive-Dokumentenspeicher</div>
+            <div class="brand-subtitle">Synchron mit Google Tasks, Kalender, Gmail &amp; Google-Drive-Dokumentenspeicher</div>
           </div>
+          <!-- HANDY-UMSCHALTER: KOMPAKT (WIE QUERFORMAT) VS. LISTE -->
+          <button type="button" class="mobile-view-mode-btn" id="mobileHeaderLayoutBtn" onclick="toggleMobileLayoutStyle()" title="Zwischen Kompakt-Ansicht (wie Querformat) und Listen-Ansicht wechseln">
+            📐 Kompakt
+          </button>
         </div>
         <div class="action-bar">
           <!-- FARBDESIGN-AUSWAHL MIT VORSCHAU (INKL. DARK THEMES) -->
@@ -127,7 +134,11 @@
             <div class="theme-menu hidden" id="themeMenu"></div>
           </div>
           <button class="btn btn-header" onclick="openTaskModal()" title="Neue Aufgabe anlegen">➕ Neue Aufgabe</button>
-          <button class="btn btn-header" onclick="openUploadDocModal()" title="Vorlesungs-, Übungs- oder Lösungsdokumente hochladen">📁 + Dokument</button>
+          <button class="btn btn-header" onclick="openUploadDocModal()" title="Dokumente hochladen">📁 + Dokument</button>
+          <!-- EIGENE TASTE FÜR GOOGLE DRIVE SYNCHRONISATION -->
+          <button class="btn btn-header" id="headerDriveSyncBtn" onclick="triggerManualDriveSync()" title="Neue Dokumente direkt mit Google Drive synchronisieren (älteste von 2 Syncs überschreiben)">
+            ☁️ Drive Sync
+          </button>
           <!-- VEREINTER GOOGLE SYNC & KOPPLUNG BUTTON -->
           <div class="google-btn-group">
             <button class="btn btn-header google-main-btn" onclick="handleGooglePrimaryClick()" id="googleMainBtn" title="Google Live-Sync (Tasks, Kalender, Gmail &amp; Drive)">
@@ -139,7 +150,7 @@
               </svg>
               <span id="googleBtnText">Google Sync</span>
             </button>
-            <button class="btn btn-header google-gear-btn" onclick="openModal('googleSetupModal')" title="Google Einstellungen &amp; JSON-Backup">⚙️</button>
+            <button class="btn btn-header google-gear-btn" onclick="openModal('googleSetupModal')" title="Google Einstellungen">⚙️</button>
           </div>
         </div>
       </div>
@@ -155,9 +166,10 @@
           <span id="overallStatusText" class="overall-status-text"></span>
         </div>
         <div class="quick-links">
+          <button class="btn btn-outline btn-sm" onclick="triggerManualDriveSync()" title="Google Drive jetzt synchronisieren">☁️ Drive Sync</button>
           <a href="https://calendar.google.com/calendar/r" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📅 Kalender</a>
           <a href="https://tasks.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✅ Tasks</a>
-          <a href="https://drive.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">☁️ Drive</a>
+          <a href="https://drive.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📂 Drive</a>
           <a href="https://mail.google.com/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">✉️ Gmail</a>
           <button class="btn btn-outline btn-sm" id="iphoneViewBtn" onclick="toggleIphoneView()" title="Handy-Ansicht ein-/ausschalten">📱 Handy-Ansicht</button>
           <button class="btn btn-outline btn-sm hidden" id="landscapeToggleBtn" onclick="toggleLandscapePreview()" title="Handy-Vorschau zwischen Hoch- und Querformat drehen">🔄 Querformat</button>
@@ -165,7 +177,7 @@
         </div>
       </div>
 
-      <!-- DASHBOARD PROGRESS CARDS (2-Spalten-Raster auf Handy, 5-Spalten auf Desktop) -->
+      <!-- DASHBOARD PROGRESS CARDS -->
       <div class="dashboard-grid" id="dashboardCards"></div>
 
       <!-- TOOLBAR & TABS -->
@@ -220,14 +232,14 @@
         </div>
       </div>
 
-      <!-- TAB 3: KOMPAKTER MODUL-DOKUMENTENSPEICHER (ALS RASTER & ORDNER PRO AUFGABE) -->
+      <!-- TAB 3: KOMPAKTER MODUL-DOKUMENTENSPEICHER (INKL. FORMELSAMMLUNG, ZUSATZ & DRIVE SYNC) -->
       <div id="viewDocs" class="hidden">
         <div class="panel">
           <div class="docs-header-bar">
             <div>
-              <h2>📁 Vorlesungs-, Übungs- &amp; Lösungsspeicher (Kompaktes Ordner-Raster)</h2>
+              <h2>📁 Vorlesungs-, Übungs-, Lösungs- &amp; Formelsammlungsspeicher</h2>
               <p class="modal-hint" style="margin-bottom:0;">
-                Jede Datei wird ohne Dopplungen direkt bei ihrer Aufgabe gespeichert, automatisch nach der Aufgabe benannt (inkl. „Lösung“) und über Google Drive geräteübergreifend mit deinem Handy synchronisiert.
+                Jede Zuordnung lässt sich jederzeit frei umordnen. Beim Drive-Sync werden direkt nur neue/geänderte Dateien übertragen und ältere Sync-Stände automatisch überschrieben.
               </p>
             </div>
             <div class="docs-controls">
@@ -240,11 +252,13 @@
                 <option value="Übung">✍️ Übung</option>
                 <option value="Lösungen">✅ Lösungen</option>
                 <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
+                <option value="Formelsammlung">📐 Formelsammlung</option>
+                <option value="Zusatz">➕ Zusatz</option>
                 <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
                 <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
               </select>
-              <button class="btn btn-outline" onclick="removeDuplicateDocuments(true)" title="Eventuelle alte Duplikate bereinigen">🧹 Duplikate prüfen</button>
-              <button class="btn btn-outline" onclick="openGoogleDrivePickerModal()">☁️ Aus Google Drive</button>
+              <button class="btn btn-outline" onclick="triggerManualDriveSync()" title="Neue Dateien mit Google Drive abgleichen &amp; ältesten Sync-Stand überschreiben">☁️ Drive Sync</button>
+              <button class="btn btn-outline" onclick="openGoogleDrivePickerModal()">📂 Aus Google Drive</button>
               <button class="btn btn-primary" onclick="openUploadDocModal()">📤 Dokumente hochladen</button>
             </div>
           </div>
@@ -357,7 +371,7 @@
     </div>
   </div>
 
-  <!-- MODAL 2: VERGRÖSSERTES DOKUMENT-HOCHLADEFENSTER (MEHRFACH-DRAG-&-DROP NACHEINANDER + GOOGLE DRIVE) -->
+  <!-- MODAL 2: VERGRÖSSERTES DOKUMENT-HOCHLADEFENSTER (INKL. FORMELSAMMLUNG & ZUSATZ) -->
   <div class="modal-backdrop" id="uploadDocModal">
     <div class="modal modal-large">
       <div class="modal-header">
@@ -371,12 +385,14 @@
             <select id="docModuleSelect" class="select-box full-width"></select>
           </div>
           <div class="form-group">
-            <label for="docCategorySelect">Vorauswahl Kategorie (inkl. Lösungen)</label>
+            <label for="docCategorySelect">Vorauswahl Kategorie (inkl. Formelsammlung &amp; Zusatz)</label>
             <select id="docCategorySelect" class="select-box full-width">
               <option value="Vorlesung">📖 Vorlesung</option>
               <option value="Übung">✍️ Übung</option>
               <option value="Lösungen">✅ Lösungen</option>
               <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
+              <option value="Formelsammlung">📐 Formelsammlung</option>
+              <option value="Zusatz">➕ Zusatz</option>
               <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
               <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
             </select>
@@ -387,7 +403,6 @@
           </div>
         </div>
 
-        <!-- GROSSE DRAG & DROP ZONE FÜR MEHRERE DATEIEN NACHEINANDER -->
         <div class="form-group" style="margin-top: 16px;">
           <div id="docDropZone"
                class="dropzone-large"
@@ -398,7 +413,7 @@
             <div class="dropzone-icon">📂</div>
             <div class="dropzone-title">Dateien hierher ziehen (auch mehrere nacheinander!) oder klicken</div>
             <div class="dropzone-sub">
-              Jede gezogene Datei wird zur unteren Liste hinzugefügt, automatisch der passenden Aufgabe zugeordnet und nach der Aufgabenbetitelung (bei Lösungen mit „Lösung“) benannt.
+              Jede gezogene Datei wird zur unteren Liste hinzugefügt, automatisch der passenden Aufgabe zugeordnet und nach der Aufgabenbetitelung benannt.
             </div>
             <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; justify-content:center;">
               <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('docFileInput').click();">💻 Dateien vom Gerät wählen</button>
@@ -411,13 +426,12 @@
             <strong id="pendingUploadCountLabel" style="font-size:0.84rem; color:var(--primary-dark);">Noch keine Dateien in der Warteschlange</strong>
             <button type="button" class="btn btn-outline btn-sm" id="clearPendingUploadsBtn" style="display:none;" onclick="clearPendingUploadQueue()">🗑️ Liste leeren</button>
           </div>
-          <!-- Dynamische Vorschau-Karten der intelligenten Einsortierung pro Datei -->
           <div id="docSmartPreviewList" class="smart-sort-preview-list"></div>
         </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
-        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Alle speichern &amp; mit Google Drive synchronisieren</button>
+        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Alle speichern &amp; neue Dateien zu Google Drive hochladen</button>
       </div>
     </div>
   </div>
@@ -446,7 +460,7 @@
       </div>
       <div class="modal-body">
         <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
-          <input type="text" id="driveSearchInput" class="input-search" style="flex:1;" placeholder="🔍 In deinem Google Drive nach Dateinamen suchen (z.B. HSÜ, LE, ÜB, PDF)..." onkeydown="if(event.key==='Enter') loadGoogleDriveFilesList()">
+          <input type="text" id="driveSearchInput" class="input-search" style="flex:1;" placeholder="🔍 In deinem Google Drive nach Dateinamen suchen (z.B. HSÜ, LE, ÜB, Formelsammlung)..." onkeydown="if(event.key==='Enter') loadGoogleDriveFilesList()">
           <button class="btn btn-primary btn-sm" onclick="loadGoogleDriveFilesList()">🔍 Drive durchsuchen</button>
         </div>
         <div id="googleDriveFilesList" style="max-height:55vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px;"></div>
@@ -488,11 +502,11 @@
     </div>
   </div>
 
-  <!-- MODAL 6: GOOGLE API SETUP & BACKUP -->
+  <!-- MODAL 6: GOOGLE API SETUP & HINTERGRUND-SICHERUNG (OHNE MANUELLE BACKUP-TASTEN) -->
   <div class="modal-backdrop" id="googleSetupModal">
     <div class="modal">
       <div class="modal-header">
-        <h3>☁️ Google Auto-Sync, Drive-Cloud &amp; Datensicherung</h3>
+        <h3>☁️ Google Auto-Sync &amp; Google Drive Cloud</h3>
         <button class="modal-close" onclick="closeModal('googleSetupModal')">&times;</button>
       </div>
       <div class="modal-body">
@@ -500,7 +514,7 @@
           <label for="clientIdInput">Hinterlegte Google OAuth 2.0 Client-ID</label>
           <input type="text" id="clientIdInput" value="420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com">
           <small class="field-note" id="savedGoogleAccountInfo">
-            Dein Google-Account wird nach der Anmeldung automatisch für zukünftige Sitzungen gemerkt. Dokumente werden über Google Drive zwischen Laptop und Handy synchronisiert.
+            Dein Google-Account wird nach der Anmeldung automatisch gemerkt. Lokale Offline-Sicherungen erfolgen vollautomatisch im Hintergrund.
           </small>
         </div>
         <div class="form-group" style="margin-bottom: 16px;">
@@ -511,17 +525,8 @@
         </div>
         <div class="sync-action-box">
           <button class="btn btn-primary" onclick="saveGoogleConfigAndConnect()">🔗 Mit Google Konto verbinden / Account merken</button>
-          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich (Tasks, Kalender &amp; Drive) ausführen</button>
-        </div>
-        <hr class="modal-divider">
-        <h4 style="margin-bottom: 8px; color: var(--primary-dark);">💾 Lokales Backup (JSON Export / Import)</h4>
-        <p class="modal-hint">Sichere deinen gesamten Plan als Datei oder übertrage ihn manuell:</p>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-          <button class="btn btn-outline btn-sm" onclick="exportJSONBackup()">⬇️ JSON-Backup herunterladen</button>
-          <label class="btn btn-outline btn-sm" style="cursor: pointer;">
-            ⬆️ JSON-Backup einspielen
-            <input type="file" accept=".json" style="display: none;" onchange="importJSONBackup(event)">
-          </label>
+          <button class="btn btn-outline" onclick="triggerManualDriveSync()">☁️ Drive Sync (Nur neue Dateien &amp; ältesten Sync überschreiben)</button>
+          <button class="btn btn-outline" onclick="forceFullResync()">🔄 Vollständigen Abgleich (Tasks, Kalender &amp; Drive)</button>
         </div>
       </div>
       <div class="modal-footer">
@@ -533,10 +538,12 @@
   <!-- TOAST NOTIFICATION -->
   <div id="toast" class="toast"></div>
 
-  <!-- MODULARE JAVASCRIPT-UNTERPROGRAMME -->
+  <!-- 6 MODULARE JAVASCRIPT-UNTERPROGRAMME -->
   <script src="data.js"></script>
+  <script src="ui-MobileAndRuntime.js"></script>
   <script src="docs-manager.js"></script>
   <script src="app.js"></script>
+  <script src="drive-sync.js"></script>
   <script src="google-sync.js"></script>
 </body>
 </html>

@@ -1,9 +1,9 @@
 /* =========================================================
    HAUPTLOGIK DER SEMESTERPLAN WEB-APP (app.js)
-   - Globaler Ladekreis (Spinner) bei Lade-/Sync-Vorgängen
+   - Stilles Offline-Backup im Hintergrund bei jeder Änderung
    - Dokumente ohne Wochenbezug oben unter dem jeweiligen Modulnamen
    - Drag & Drop von Aufgaben UND von Dokumenten direkt auf Aufgaben
-   - 2-Spalten-Modulraster auf Handy & Querformat-Unterstützung
+   - Mobiler Umschalter zwischen Kompakt- (wie Querformat) & Listen-Ansicht
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -29,25 +29,6 @@ let appState = null;
 let activeModuleFilter = null;
 let currentTab = 'table';
 let draggedTaskInfo = null;
-let loadingDepth = 0;
-
-/* =========================================================
-   LADEKREIS (SPINNER) STEUERUNG
-   ========================================================= */
-function showLoading(message = 'Lädt...') {
-  loadingDepth++;
-  const el = document.getElementById('globalLoadingIndicator');
-  const txt = document.getElementById('globalLoadingText');
-  if (txt) txt.textContent = message;
-  if (el) el.classList.add('active');
-}
-
-function hideLoading() {
-  loadingDepth = Math.max(0, loadingDepth - 1);
-  if (loadingDepth === 0) {
-    document.getElementById('globalLoadingIndicator')?.classList.remove('active');
-  }
-}
 
 async function initApp() {
   showLoading('Lade Semesterplan & Dokumente...');
@@ -61,8 +42,6 @@ async function initApp() {
       document.body.classList.add('iphone-view-mode');
       updateIphoneBtnState();
     }
-    updateIosClock();
-    setInterval(updateIosClock, 30000);
 
     populateFocusWeekDropdown();
     populateDocsFilterDropdowns();
@@ -84,13 +63,6 @@ async function initApp() {
   } finally {
     hideLoading();
   }
-}
-
-function updateIosClock() {
-  const el = document.getElementById('iosClock');
-  if (!el) return;
-  const now = new Date();
-  el.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 }
 
 function stripModuleBracketsFromText(text, shortName = '') {
@@ -129,8 +101,18 @@ function loadState() {
       }
     }
   } catch (e) {
-    console.warn('Konnte gespeicherten Status nicht laden, nutze INITIAL_DATA:', e);
+    console.warn('Konnte gespeicherten Status nicht laden, prüfe Hintergrund-Backup:', e);
   }
+
+  // Automatischer Rückgriff auf das stille Hintergrund-Backup, falls vorhanden
+  if (typeof restoreSilentBackgroundBackupIfNeeded === 'function') {
+    const restored = restoreSilentBackgroundBackupIfNeeded();
+    if (restored) {
+      appState = restored;
+      return;
+    }
+  }
+
   if (typeof INITIAL_DATA === 'undefined') {
     appState = { modules: [], weeks: [], deletedGoogleTaskIds: [] };
     return;
@@ -142,7 +124,11 @@ function loadState() {
 
 function saveState() {
   try {
+    appState.lastUpdated = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    if (typeof saveSilentBackgroundBackup === 'function') {
+      saveSilentBackgroundBackup(appState);
+    }
   } catch (e) {
     console.error('Fehler beim Speichern im localStorage:', e);
   }
@@ -266,7 +252,7 @@ function toggleIphoneView() {
   if (!isIphone) document.body.classList.remove('landscape-mode');
   localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
   updateIphoneBtnState();
-  showToast(isIphone ? '📱 Handy-Ansicht aktiviert (2-Spalten-Modulraster)' : '💻 Desktop-Tabellenansicht aktiviert');
+  showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
 }
 
 function toggleLandscapePreview() {
@@ -437,7 +423,7 @@ function calculateStats() {
 }
 
 /* =========================================================
-   RENDERING: DASHBOARD, TABELLE (INKL. ALLG. MODUL-UNTERLAGEN OBEN)
+   RENDERING: DASHBOARD, TABELLE & BANNER
    ========================================================= */
 function renderAll() {
   if (!appState) return;
@@ -494,11 +480,16 @@ function ensureMobileCurrentWeekBanner(currentWeekIdx) {
   }
   const idx = currentWeekIdx !== -1 ? currentWeekIdx : 0;
   const week = appState.weeks[idx];
+  const isCompact = (localStorage.getItem('semesterplan_mobile_layout_style') || 'compact') === 'compact';
+  const layoutBtnLabel = isCompact ? '📋 Listen-Ansicht' : '📐 Kompakt-Ansicht';
   if (week) {
     const oneLine = week.weekLabel.replace(/\n/g, ' ');
     banner.innerHTML = `
-      <span>📍 Aktuelle Woche oben: ${escapeHtml(oneLine)}</span>
-      <button type="button" class="btn btn-header btn-sm" onclick="switchTab('focus'); selectCurrentCalendarWeek(true);">Zum Fokus</button>
+      <span>📍 Aktuell: ${escapeHtml(oneLine)}</span>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button type="button" class="btn btn-header btn-sm" id="mobileBannerLayoutBtn" onclick="toggleMobileLayoutStyle()">${layoutBtnLabel}</button>
+        <button type="button" class="btn btn-header btn-sm" onclick="triggerManualDriveSync()">☁️ Sync</button>
+      </div>
     `;
   }
 }
@@ -513,14 +504,13 @@ function renderTable(stats) {
     ? appState.modules.filter(m => m.shortName === activeModuleFilter)
     : appState.modules;
 
-  // Kopfzeile + Zeile direkt darunter für alle Dokumente OHNE Wochenbezug pro Modulspalte
   thead.innerHTML = `
     <tr>
       <th>Semesterwoche</th>
       ${visibleModules.map(m => `<th>${escapeHtml(m.shortName)}<br><small style="font-weight:400; opacity:0.9;">${escapeHtml(m.fullName)}</small></th>`).join('')}
     </tr>
     <tr class="general-docs-row">
-      <td>📌 Allgemeine Modul-Unterlagen<br><small style="font-weight:500; opacity:0.8;">(ohne Wochenbezug)</small></td>
+      <td>📌 Allgemeine Modul-Unterlagen<br><small style="font-weight:500; opacity:0.8;">(Formelsammlung &amp; Allgemein)</small></td>
       ${visibleModules.map(m => `<td data-module="${escapeAttr(m.shortName + ' (Allgemein)')}">${renderGeneralModuleDocsCellHtml(m.shortName)}</td>`).join('')}
     </tr>
   `;
@@ -703,7 +693,6 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
   event.stopPropagation();
   event.currentTarget.classList.remove('drag-over-item', 'doc-drop-target');
 
-  // Fall 1: Ein nicht zugeordnetes Dokument wurde auf diese Aufgabe gezogen!
   const rawData = event.dataTransfer?.getData('text/plain') || '';
   if (draggedDocId || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
@@ -712,7 +701,6 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
     return;
   }
 
-  // Fall 2: Eine Aufgabe wurde verschoben
   await executeTaskMove(targetWeekIdx, targetMod, targetItemIdx);
 }
 
@@ -729,10 +717,13 @@ async function handleCellDrop(event, targetWeekIdx, targetMod) {
     if (doc && week) {
       doc.module = targetMod;
       doc.weekLabel = week.weekLabel.replace(/\n/g, ' ');
+      doc.manualOverride = true;
+      doc.needsDriveUpdate = true;
+      doc.updatedAt = Date.now();
       const tasks = week.cells[targetMod] || [];
       if (tasks.length === 1) {
         doc.taskText = stripModuleBracketsFromText(tasks[0].text, targetMod);
-        recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
+        await recalculateTaskDocTitles(doc.module, doc.weekLabel, doc.taskText);
       } else {
         doc.taskText = '';
       }
@@ -1145,7 +1136,7 @@ function deleteTaskItem(weekIdx, shortName, itemIdx) {
 }
 
 async function syncAndClean() {
-  showLoading('Bereinige Aufgaben & synchronisiere mit Google...');
+  startCancelableOperation('Bereinige Aufgaben & synchronisiere mit Google...');
   try {
     const seenTestateGlobal = new Set();
     for (const week of appState.weeks) {
@@ -1174,7 +1165,7 @@ async function syncAndClean() {
     await sanitizeAndDeduplicateDocsSilent();
     saveState();
     renderAll();
-    if (typeof syncWithGoogleTasksAPI === 'function') {
+    if (typeof syncWithGoogleTasksAPI === 'function' && !isCurrentActionCancelled()) {
       await syncWithGoogleTasksAPI(false);
     }
   } finally {
@@ -1352,7 +1343,7 @@ async function downloadThemedPdfFile() {
     return;
   }
   const origText = btn ? btn.textContent : '';
-  showLoading('Erstelle farbiges PDF-Dokument...');
+  startCancelableOperation('Erstelle farbiges PDF-Dokument...');
   if (btn) {
     btn.disabled = true;
     btn.textContent = '⏳ Farb-PDF wird erstellt...';
@@ -1367,10 +1358,12 @@ async function downloadThemedPdfFile() {
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
     };
     await html2pdf().set(opt).from(target).save();
-    closeModal('pdfModal');
-    showToast('✅ Farbiges PDF erfolgreich heruntergeladen!');
+    if (!isCurrentActionCancelled()) {
+      closeModal('pdfModal');
+      showToast('✅ Farbiges PDF erfolgreich heruntergeladen!');
+    }
   } catch (e) {
-    printWithThemeColors();
+    if (!isCurrentActionCancelled()) printWithThemeColors();
   } finally {
     hideLoading();
     if (btn) {
@@ -1383,42 +1376,6 @@ async function downloadThemedPdfFile() {
 function printWithThemeColors() {
   closeModal('pdfModal');
   setTimeout(() => window.print(), 200);
-}
-
-/* =========================================================
-   JSON BACKUP EXPORT & IMPORT
-   ========================================================= */
-function exportJSONBackup() {
-  const dataStr = JSON.stringify(appState, null, 2);
-  const blob = new Blob([dataStr], { type: 'application/json' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = `Semesterplan_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-  link.click();
-  showToast('⬇️ JSON-Backup erfolgreich gespeichert!');
-}
-
-function importJSONBackup(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const imported = JSON.parse(e.target.result);
-      if (imported && Array.isArray(imported.modules) && Array.isArray(imported.weeks)) {
-        appState = imported;
-        saveState();
-        renderAll();
-        closeModal('googleSetupModal');
-        showToast('✅ JSON-Backup erfolgreich wiederhergestellt!');
-      } else {
-        showToast('❌ Ungültiges Backup-Format.');
-      }
-    } catch (err) {
-      showToast('❌ Datei konnte nicht gelesen werden.');
-    }
-  };
-  reader.readAsText(file);
 }
 
 /* =========================================================
