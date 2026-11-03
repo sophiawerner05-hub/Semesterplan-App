@@ -1,8 +1,7 @@
 /* =========================================================
-   UNTERPROGRAMM 8: DIREKTE GOOGLE REST-API SYNCHRONISATION (google-sync.js)
-   - Jederzeit abbrechbar über "✖ Abbrechen" (AbortController)
-   - Google Account dauerhaft merken (login_hint & Auto-Reconnect)
-   - Google Tasks, Kalender (Montags-Modus ohne Emojis/Klammern) & Gmail
+   UNTERPROGRAMM 8: DIREKTE GOOGLE REST-API SYNCHRONISATION
+   INKL. LÖSCH-GEDÄCHTNIS (KEIN WIEDERAUFTAUCHEN GELÖSCHTER
+   AUFGABEN AUS TASKS ODER KALENDER) (google-sync.js)
    ========================================================= */
 const DEFAULT_GOOGLE_CLIENT_ID = '420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com';
 const TOKEN_STORAGE_KEY = 'semesterplan_google_access_token';
@@ -98,10 +97,10 @@ function initGoogleSyncSettingsUI() {
     updateGoogleConnectedUI(true);
     startBackgroundAutoSync();
     setTimeout(async () => {
-      await syncWithGoogleTasksAPI(true);
       if (typeof syncDocumentsWithGoogleDrive === 'function') {
         await syncDocumentsWithGoogleDrive(true);
       }
+      await syncWithGoogleTasksAPI(true);
       await checkAndSendWeeklyAutoEmail();
     }, 600);
   } else {
@@ -117,10 +116,10 @@ function initGoogleSyncSettingsUI() {
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && isGoogleConnected()) {
-      syncWithGoogleTasksAPI(true);
       if (typeof syncDocumentsWithGoogleDrive === 'function') {
         syncDocumentsWithGoogleDrive(true);
       }
+      syncWithGoogleTasksAPI(true);
     }
   });
 }
@@ -131,10 +130,10 @@ function startBackgroundAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(() => {
     if (googleAccessToken) {
-      syncWithGoogleTasksAPI(true);
       if (typeof syncDocumentsWithGoogleDrive === 'function') {
         syncDocumentsWithGoogleDrive(true);
       }
+      syncWithGoogleTasksAPI(true);
       checkAndSendWeeklyAutoEmail();
     }
   }, 90 * 1000);
@@ -195,10 +194,10 @@ function initGoogleAuth() {
         await fetchAndRememberGoogleUserProfile();
         updateGoogleConnectedUI(true);
         startBackgroundAutoSync();
-        await syncWithGoogleTasksAPI(false);
         if (typeof syncDocumentsWithGoogleDrive === 'function') {
           await syncDocumentsWithGoogleDrive(false);
         }
+        await syncWithGoogleTasksAPI(false);
         await checkAndSendWeeklyAutoEmail();
       }
     }
@@ -459,6 +458,15 @@ async function deleteSingleTaskFromGoogle(shortName, googleTaskId) {
   } catch (e) {}
 }
 
+async function deleteSingleCalendarEventFromGoogle(googleEventId) {
+  try {
+    if (!googleAccessToken || !googleEventId) return;
+    await googleApiFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(googleEventId)}`, {
+      method: 'DELETE'
+    });
+  } catch (e) {}
+}
+
 async function syncWithGoogleTasksAPI(silent = false) {
   if (!googleAccessToken) {
     if (!silent) connectGoogleLive();
@@ -468,7 +476,14 @@ async function syncWithGoogleTasksAPI(silent = false) {
   isSyncInProgress = true;
   if (!silent) startCancelableOperation('Synchronisiere Aufgaben mit Google Tasks & Kalender...');
   try {
+    // 0. Zuerst Drive-Snapshot synchronisieren, damit aktuelle Lösch-Tombstones & Dokument-Zuordnungen vorliegen
+    if (!isCurrentActionCancelled() && typeof syncDocumentsWithGoogleDrive === 'function') {
+      await syncDocumentsWithGoogleDrive(true);
+    }
+
     const listMap = await ensureModuleTaskLists(true);
+
+    // 1. Vorgemerkte gelöschte Google-Tasks endgültig löschen
     if (Array.isArray(appState.deletedGoogleTaskIds) && appState.deletedGoogleTaskIds.length > 0) {
       for (const delEntry of appState.deletedGoogleTaskIds) {
         if (isCurrentActionCancelled()) break;
@@ -483,6 +498,17 @@ async function syncWithGoogleTasksAPI(silent = false) {
       }
       appState.deletedGoogleTaskIds = [];
     }
+
+    // 2. Vorgemerkte gelöschte Google-Kalender-Events endgültig löschen
+    if (Array.isArray(appState.deletedGoogleEventIds) && appState.deletedGoogleEventIds.length > 0) {
+      for (const evId of appState.deletedGoogleEventIds) {
+        if (isCurrentActionCancelled()) break;
+        await deleteSingleCalendarEventFromGoogle(evId);
+      }
+      appState.deletedGoogleEventIds = [];
+    }
+
+    purgeTombstonedTasksFromState(appState);
 
     let importedFromGoogleCount = 0;
     let statusChangedFromGoogleCount = 0;
@@ -526,10 +552,17 @@ async function syncWithGoogleTasksAPI(silent = false) {
         activeGoogleTasks = activeGoogleTasks.filter(t => !legacyParentIds.has(t.id));
       }
 
+      // Wenn eine Aufgabe direkt in der Google-Tasks-App gelöscht wurde, auch lokal als Tombstone vermerken!
       for (const week of appState.weeks) {
         if (week.googleParentTaskIds) delete week.googleParentTaskIds[listId];
         const items = week.cells[shortName] || [];
-        week.cells[shortName] = items.filter(item => !(item.googleTaskId && deletedTaskIds.has(item.googleTaskId)));
+        week.cells[shortName] = items.filter(item => {
+          if (item.googleTaskId && deletedTaskIds.has(item.googleTaskId)) {
+            registerTaskTombstone(shortName, week.id, item.text);
+            return false;
+          }
+          return true;
+        });
       }
 
       const matchedGoogleTaskIds = new Set();
@@ -596,7 +629,8 @@ async function syncWithGoogleTasksAPI(silent = false) {
             const needsPatch =
               matchedTask.title !== expectedCleanTitle ||
               currentDueDay !== desiredDueDay ||
-              (matchedTask.status === 'completed') !== item.done;
+              (matchedTask.status === 'completed') !== item.done ||
+              !(matchedTask.notes || '').includes(`WocheID:${week.id}`);
             if (needsPatch) {
               await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
                 method: 'PATCH',
@@ -613,6 +647,8 @@ async function syncWithGoogleTasksAPI(silent = false) {
         }
       }
 
+      // Prüfe verbleibende Google Tasks:
+      // Wenn sie in unseren Tombstones (gelöschten Aufgaben) stehen -> NICHT re-importieren, sondern auch auf Google löschen!
       for (const gTask of activeGoogleTasks) {
         if (isCurrentActionCancelled()) break;
         if (matchedGoogleTaskIds.has(gTask.id)) continue;
@@ -636,6 +672,17 @@ async function syncWithGoogleTasksAPI(silent = false) {
         }
 
         const targetWeek = appState.weeks[targetWeekIdx];
+
+        // WICHTIG: Wurde diese Aufgabe vom Nutzer gelöscht (Tombstone)? Dann auf Google löschen statt re-importieren!
+        if (isTaskTombstoned(shortName, targetWeek.id, cleanTaskText)) {
+          try {
+            await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${gTask.id}`, {
+              method: 'DELETE'
+            });
+          } catch (e) {}
+          continue;
+        }
+
         const existingInCell = targetWeek.cells[shortName] || [];
         const duplicate = existingInCell.find(i => i.text.toLowerCase() === cleanTaskText.toLowerCase());
         if (!duplicate) {
@@ -657,10 +704,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
     if (!isCurrentActionCancelled() && localStorage.getItem('semesterplan_sync_calendar') !== 'false') {
       const calImported = await syncEventsFromGoogleCalendar();
       importedFromGoogleCount += calImported;
-    }
-
-    if (!isCurrentActionCancelled() && typeof syncDocumentsWithGoogleDrive === 'function') {
-      await syncDocumentsWithGoogleDrive(true);
     }
 
     saveState();
@@ -753,6 +796,17 @@ async function syncEventsFromGoogleCalendar() {
       const cleanTitle = extractCleanTaskDescription(matchedMod, rawSummary);
       if (!cleanTitle) continue;
 
+      const targetWeek = appState.weeks[weekIdx];
+
+      // WICHTIG: Falls diese Aufgabe bereits vom Nutzer gelöscht wurde (Tombstone),
+      // NICHT wieder aus dem Google Kalender importieren!
+      if (isTaskTombstoned(matchedMod, targetWeek.id, cleanTitle)) {
+        if ((ev.description || '').includes('Semesterplan-Aufgabe')) {
+          await deleteSingleCalendarEventFromGoogle(ev.id);
+        }
+        continue;
+      }
+
       const expectedSummary = buildCleanGoogleTitle(matchedMod, cleanTitle);
       if (rawSummary !== expectedSummary) {
         try {
@@ -763,7 +817,7 @@ async function syncEventsFromGoogleCalendar() {
         } catch (e) {}
       }
 
-      const cellItems = appState.weeks[weekIdx].cells[matchedMod] || [];
+      const cellItems = targetWeek.cells[matchedMod] || [];
       const exists = cellItems.some(i =>
         i.googleEventId === ev.id || i.text.toLowerCase() === cleanTitle.toLowerCase()
       );
@@ -776,7 +830,7 @@ async function syncEventsFromGoogleCalendar() {
           googleEventId: ev.id,
           syncCalendar: true
         });
-        appState.weeks[weekIdx].cells[matchedMod] = cellItems;
+        targetWeek.cells[matchedMod] = cellItems;
         importedCount++;
       }
     }

@@ -1,7 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 6: HAUPTSTEUERUNG, LAZY-RENDERING, DIREKTE
-   SPEICHER-NAVIGATION, MITNAHME ANGEHÄNGTER DATEIEN BEIM
-   AUFGABEN-UMZUG, DRAG & DROP, E-MAIL & PDF (app.js)
+   UNTERPROGRAMM 6: HAUPTSTEUERUNG, DAUERHAFTES AUFGABEN-LÖSCHEN
+   (INKL. GOOGLE KALENDER & TOMBSTONES), DRAG & DROP, E-MAIL & PDF (app.js)
    ========================================================= */
 let draggedTaskInfo = null;
 let searchDebounceTimer = null;
@@ -52,7 +51,6 @@ function debouncedRenderAll() {
 
 /* =========================================================
    1. TAB-WECHSEL & DIREKTE SPEICHER-WEITERLEITUNG
-      (Blende obere Modul-Karten im Speicher-Modus komplett aus!)
    ========================================================= */
 function switchTab(tabName) {
   currentTab = tabName;
@@ -64,7 +62,6 @@ function switchTab(tabName) {
   document.getElementById('viewEmail')?.classList.toggle('hidden', tabName !== 'email');
   document.getElementById('tableFilters')?.classList.toggle('hidden', tabName !== 'table');
 
-  // Direkt zum Speicher leiten ohne die obere Karten-Ansicht darüber zu behalten
   document.getElementById('dashboardCards')?.classList.toggle('hidden', isDocsView);
   document.getElementById('topIntegrationStrip')?.classList.toggle('hidden', isDocsView);
   const mobileBanner = document.getElementById('mobileCurrentWeekBanner');
@@ -262,7 +259,6 @@ function renderTable(stats) {
     ? appState.modules.filter(m => m.shortName === activeModuleFilter)
     : appState.modules;
 
-  // Erste Zeile (Modulnamen) läuft dank position: sticky & --sticky-header-offset beim Runterscrollen dauerhaft mit!
   thead.innerHTML = `
     <tr>
       <th>Semesterwoche</th>
@@ -415,7 +411,6 @@ function renderTable(stats) {
 
 /* =========================================================
    4. DRAG & DROP IN SPALTEN & AUF AUFGABEN
-      (INKL. AUTOMATISCHER MITNAHME ANGEHÄNGTER DATEIEN!)
    ========================================================= */
 function handleTaskDragStart(event, weekIdx, shortName, itemIdx) {
   draggedDocId = null;
@@ -535,7 +530,15 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
 
   const taskTextBeforeMove = stripModuleBracketsFromText(srcList[srcIdx].text, srcMod);
 
-  // WICHTIG: Vor dem Umhängen der Aufgabe alle angehängten Dokumente automatisch mitnehmen!
+  // Beim Verschieben einer Aufgabe in eine andere Woche / Modul:
+  // Alte Position als gelöscht markieren, damit kein Zweitgerät die Aufgabe am alten Ort wiederherstellt!
+  if (srcWeekIdx !== targetWeekIdx || srcMod !== targetMod) {
+    const oldExactSig = buildTaskSignature(srcMod, appState.weeks[srcWeekIdx].id, taskTextBeforeMove);
+    appState.deletedTaskTombstones = appState.deletedTaskTombstones || {};
+    appState.deletedTaskTombstones[oldExactSig] = Date.now();
+    clearTaskTombstone(targetMod, appState.weeks[targetWeekIdx].id, taskTextBeforeMove);
+  }
+
   let movedDocsCount = 0;
   if ((srcWeekIdx !== targetWeekIdx || srcMod !== targetMod) && typeof moveAttachedDocsWithTask === 'function') {
     movedDocsCount = await moveAttachedDocsWithTask(
@@ -566,6 +569,7 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
 
   if (srcWeekIdx === targetWeekIdx && srcMod === targetMod) {
     showToast('↕️ Reihenfolge aktualisiert!');
+    if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
   } else {
     const docsHint = movedDocsCount > 0 ? ` (inkl. ${movedDocsCount} angehängter Datei${movedDocsCount > 1 ? 'en' : ''})` : '';
     showToast(`📦 Aufgabe${docsHint} nach ${targetMod} (${getWeekShortName(targetWeekIdx)}) verschoben!`);
@@ -577,9 +581,7 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
       } else {
         await pushSingleTaskMoveOrEditToGoogle(targetWeekIdx, targetMod, movedItem);
       }
-      if (movedDocsCount > 0 && typeof syncDocumentsWithGoogleDrive === 'function') {
-        syncDocumentsWithGoogleDrive(true);
-      }
+      if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync(500);
     }
   }
 }
@@ -594,6 +596,7 @@ function moveTaskOrder(weekIdx, shortName, itemIdx, direction) {
   list[newIdx] = temp;
   saveState();
   renderAll();
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 /* =========================================================
@@ -745,8 +748,7 @@ function renderFocusView() {
 }
 
 /* =========================================================
-   6. AUFGABEN ABHAKEN, HINZUFÜGEN & BEARBEITEN
-      (INKL. MITNAHME ANGEHÄNGTER DATEIEN BEI MODAL-ÄNDERUNG)
+   6. AUFGABEN ABHAKEN, HINZUFÜGEN, BEARBEITEN & DAUERHAFT LÖSCHEN
    ========================================================= */
 function toggleTaskDone(weekIdx, shortName, itemIdx) {
   const items = appState.weeks[weekIdx]?.cells[shortName];
@@ -759,6 +761,7 @@ function toggleTaskDone(weekIdx, shortName, itemIdx) {
   if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
     pushSingleTaskToggleToGoogle(weekIdx, shortName, item);
   }
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 function toggleTaskInProgress(weekIdx, shortName, itemIdx) {
@@ -775,6 +778,7 @@ function toggleTaskInProgress(weekIdx, shortName, itemIdx) {
   saveState();
   renderAll();
   showToast(item.inProgress ? '⏳ Aufgabe als „Angefangen“ markiert!' : '⬜ Status „Angefangen“ aufgehoben.');
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 function populateModalDropdowns() {
@@ -884,6 +888,9 @@ async function saveTaskFromModal() {
   const origMod = document.getElementById('editTaskOrigModule').value;
   const origItemStr = document.getElementById('editTaskItemIdx').value;
 
+  // Wenn eine Aufgabe bewusst gespeichert wird, eventuelle frühere Lösch-Sperre für diesen Namen aufheben
+  clearTaskTombstone(targetMod, appState.weeks[targetWeekIdx].id, cleanText);
+
   if (!appState.weeks[targetWeekIdx].cells[targetMod]) {
     appState.weeks[targetWeekIdx].cells[targetMod] = [];
   }
@@ -896,19 +903,23 @@ async function saveTaskFromModal() {
       const oldTaskText = stripModuleBracketsFromText(existingItem.text, origMod);
       let movedDocsCount = 0;
 
-      // Falls Woche, Modul oder Aufgabentext geändert wurden: Angehängte Dokumente automatisch mitnehmen!
-      if (
-        (origWeekIdx !== targetWeekIdx || origMod !== targetMod || oldTaskText !== cleanText) &&
-        typeof moveAttachedDocsWithTask === 'function'
-      ) {
-        movedDocsCount = await moveAttachedDocsWithTask(
-          origWeekIdx,
-          origMod,
-          oldTaskText,
-          targetWeekIdx,
-          targetMod,
-          cleanText
-        );
+      if (origWeekIdx !== targetWeekIdx || origMod !== targetMod || oldTaskText !== cleanText) {
+        // Alte Signatur als verschoben/gelöscht vormerken, damit kein anderes Gerät die alte Version wiederherstellt
+        const oldExactSig = buildTaskSignature(origMod, appState.weeks[origWeekIdx].id, oldTaskText);
+        appState.deletedTaskTombstones = appState.deletedTaskTombstones || {};
+        appState.deletedTaskTombstones[oldExactSig] = Date.now();
+        clearTaskTombstone(targetMod, appState.weeks[targetWeekIdx].id, cleanText);
+
+        if (typeof moveAttachedDocsWithTask === 'function') {
+          movedDocsCount = await moveAttachedDocsWithTask(
+            origWeekIdx,
+            origMod,
+            oldTaskText,
+            targetWeekIdx,
+            targetMod,
+            cleanText
+          );
+        }
       }
 
       existingItem.text = cleanText;
@@ -933,6 +944,7 @@ async function saveTaskFromModal() {
       if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
         pushSingleTaskMoveOrEditToGoogle(targetWeekIdx, targetMod, existingItem);
       }
+      if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
       return;
     }
   }
@@ -955,6 +967,7 @@ async function saveTaskFromModal() {
   if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
     pushSingleTaskCreateToGoogle(targetWeekIdx, targetMod, newItem);
   }
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 function deleteTaskFromModal() {
@@ -967,9 +980,28 @@ function deleteTaskFromModal() {
 }
 
 function deleteTaskItem(weekIdx, shortName, itemIdx) {
-  const items = appState.weeks[weekIdx]?.cells[shortName];
+  const week = appState.weeks[weekIdx];
+  const items = week?.cells?.[shortName];
   if (!items || !items[itemIdx]) return;
   const removed = items.splice(itemIdx, 1)[0];
+
+  // 1. Dauerhafte Lösch-Sperre (Tombstone) setzen, damit weder Google Tasks,
+  //    noch Google Kalender oder ein Zweitgerät die gelöschte Aufgabe wiederherstellen!
+  registerTaskTombstone(shortName, week.id, removed.text);
+
+  // 2. Falls an diese gelöschte Aufgabe Dokumente gekoppelt waren, bleiben diese als Wochen-Dokumente erhalten
+  const normRemovedTask = normalizeTaskTextForMatch(removed.text, shortName);
+  cachedDocsList.forEach(doc => {
+    if (doc.module === shortName && normalizeTaskTextForMatch(doc.taskText || '', shortName) === normRemovedTask) {
+      doc.taskText = '';
+      doc.taskHash = '';
+      doc.needsDriveUpdate = true;
+      doc.updatedAt = Date.now();
+      putDocRecordInDB(doc);
+    }
+  });
+
+  // 3. Sowohl aus Google Tasks ALS AUCH aus dem Google Kalender löschen!
   if (removed.googleTaskId) {
     if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       deleteSingleTaskFromGoogle(shortName, removed.googleTaskId);
@@ -978,14 +1010,25 @@ function deleteTaskItem(weekIdx, shortName, itemIdx) {
       appState.deletedGoogleTaskIds.push({ shortName, taskId: removed.googleTaskId });
     }
   }
+  if (removed.googleEventId) {
+    if (typeof isGoogleConnected === 'function' && isGoogleConnected() && typeof deleteSingleCalendarEventFromGoogle === 'function') {
+      deleteSingleCalendarEventFromGoogle(removed.googleEventId);
+    } else {
+      appState.deletedGoogleEventIds = appState.deletedGoogleEventIds || [];
+      appState.deletedGoogleEventIds.push(removed.googleEventId);
+    }
+  }
+
   saveState();
   renderAll();
-  showToast('🗑️ Aufgabe gelöscht.');
+  showToast('🗑️ Aufgabe dauerhaft gelöscht.');
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync(400);
 }
 
 async function syncAndClean() {
   startCancelableOperation('Bereinige Aufgaben & synchronisiere mit Google...');
   try {
+    purgeTombstonedTasksFromState(appState);
     const seenTestateGlobal = new Set();
     for (const week of appState.weeks) {
       for (const mod of appState.modules) {
@@ -999,6 +1042,7 @@ async function syncAndClean() {
             .trim();
           const lowerClean = cleanLine.toLowerCase();
           if (!cleanLine || seenInCell.has(lowerClean)) continue;
+          if (isTaskTombstoned(mod.shortName, week.id, cleanLine)) continue;
           seenInCell.add(lowerClean);
           if (/^testat\s*\d+$/i.test(lowerClean)) {
             if (seenTestateGlobal.has(lowerClean)) continue;

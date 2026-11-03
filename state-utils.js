@@ -1,6 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 2: STATE-VERWALTUNG, RAM-SCHONENDE INDEXEDDB
-   MIT SORTIERREIHENFOLGE, DATUM-HELFER & STATISTIKEN (state-utils.js)
+   UNTERPROGRAMM 2: STATE-VERWALTUNG, LÖSCH-GEDÄCHTNIS (TOMBSTONES),
+   AUFGABEN-HASHING, RAM-SCHONENDE INDEXEDDB & STATISTIKEN (state-utils.js)
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -15,11 +15,11 @@ const LEGACY_DOCS_STORE = 'module_docs';
 let appState = null;
 let activeModuleFilter = null;
 let currentTab = 'table';
-let cachedDocsList = []; // Hält NUR schlanke Metadaten im RAM (keine Base64-Strings!)
+let cachedDocsList = []; // Hält NUR schlanke Metadaten im RAM
 let docsDbPromise = null;
 
 /* =========================================================
-   1. STATE LADEN, SPEICHERN & STILLES HINTERGRUND-BACKUP
+   1. EINDEUTIGE SIGNATUREN & HASHES FÜR AUFGABEN & LÖSCH-SPERREN
    ========================================================= */
 function stripModuleBracketsFromText(text, shortName = '') {
   let cleaned = String(text ?? '').trim();
@@ -27,6 +27,124 @@ function stripModuleBracketsFromText(text, shortName = '') {
     cleaned = cleaned.replace(new RegExp(`^\\[\\s*${shortName}\\s*\\]\\s*:?\\s*`, 'i'), '');
   }
   return cleaned.replace(/^\[[^\]]+\]\s*:?\s*/, '').trim();
+}
+
+function normalizeTaskTextForMatch(text, shortName = '') {
+  return stripModuleBracketsFromText(text || '', shortName)
+    .replace(/^[✅⏳📅]\s*/, '')
+    .replace(new RegExp(`^${shortName}\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function resolveWeekIdFromLabelOrId(weekIdOrLabel) {
+  const raw = String(weekIdOrLabel || '').trim();
+  if (!raw) return 'general';
+  if (/^week_\d+$/i.test(raw)) return raw.toLowerCase();
+
+  const oneLine = raw.replace(/\n/g, ' ').trim();
+  if (appState && Array.isArray(appState.weeks)) {
+    const found = appState.weeks.find(w =>
+      w.id === raw || w.weekLabel.replace(/\n/g, ' ').trim() === oneLine
+    );
+    if (found) return found.id;
+  }
+  const wkMatch = oneLine.match(/woche\s*(\d+|zusatz)/i);
+  if (wkMatch) {
+    return wkMatch[1].toLowerCase() === 'zusatz' ? 'week_17' : `week_${wkMatch[1]}`;
+  }
+  return oneLine.toLowerCase();
+}
+
+function buildTaskSignature(shortName, weekIdOrLabel, taskText) {
+  const mod = String(shortName || '').trim().toLowerCase();
+  const wkId = resolveWeekIdFromLabelOrId(weekIdOrLabel);
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  return `${mod}|${wkId}|${normTxt}`;
+}
+
+function buildModuleTaskSignature(shortName, taskText) {
+  const mod = String(shortName || '').trim().toLowerCase();
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  return `${mod}|*|${normTxt}`;
+}
+
+function computeTaskHash(shortName, weekIdOrLabel, taskText) {
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  if (!normTxt) return '';
+  const sig = buildTaskSignature(shortName, weekIdOrLabel, normTxt);
+  let h = 2166136261;
+  for (let i = 0; i < sig.length; i++) {
+    h ^= sig.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return 'th_' + (h >>> 0).toString(36);
+}
+
+function isTaskTombstoned(shortName, weekIdOrLabel, taskText) {
+  if (!appState || !appState.deletedTaskTombstones) return false;
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  return Boolean(appState.deletedTaskTombstones[exactSig] || appState.deletedTaskTombstones[wildcardSig]);
+}
+
+function registerTaskTombstone(shortName, weekIdOrLabel, taskText) {
+  if (!appState) return;
+  if (!appState.deletedTaskTombstones || typeof appState.deletedTaskTombstones !== 'object') {
+    appState.deletedTaskTombstones = {};
+  }
+  const now = Date.now();
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  appState.deletedTaskTombstones[exactSig] = now;
+  appState.deletedTaskTombstones[wildcardSig] = now;
+}
+
+function clearTaskTombstone(shortName, weekIdOrLabel, taskText) {
+  if (!appState || !appState.deletedTaskTombstones) return;
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  delete appState.deletedTaskTombstones[exactSig];
+  delete appState.deletedTaskTombstones[wildcardSig];
+}
+
+function purgeTombstonedTasksFromState(stateObj) {
+  if (!stateObj || !Array.isArray(stateObj.weeks) || !stateObj.deletedTaskTombstones) return false;
+  let removedAny = false;
+  const tombs = stateObj.deletedTaskTombstones;
+  for (const week of stateObj.weeks) {
+    for (const mod of (stateObj.modules || [])) {
+      const sName = mod.shortName;
+      const items = week.cells?.[sName] || [];
+      const filtered = items.filter(item => {
+        const exactSig = buildTaskSignature(sName, week.id, item.text);
+        const wildcardSig = buildModuleTaskSignature(sName, item.text);
+        if (tombs[exactSig] || tombs[wildcardSig]) {
+          removedAny = true;
+          return false;
+        }
+        return true;
+      });
+      if (week.cells) week.cells[sName] = filtered;
+    }
+  }
+  return removedAny;
+}
+
+/* =========================================================
+   2. STATE LADEN, SPEICHERN & STILLES HINTERGRUND-BACKUP
+   ========================================================= */
+function ensureStateCollections(stateObj) {
+  if (!stateObj) return;
+  if (!Array.isArray(stateObj.deletedGoogleTaskIds)) stateObj.deletedGoogleTaskIds = [];
+  if (!Array.isArray(stateObj.deletedGoogleEventIds)) stateObj.deletedGoogleEventIds = [];
+  if (!stateObj.deletedTaskTombstones || typeof stateObj.deletedTaskTombstones !== 'object') {
+    stateObj.deletedTaskTombstones = {};
+  }
+  if (!stateObj.deletedDocIds || typeof stateObj.deletedDocIds !== 'object') {
+    stateObj.deletedDocIds = {};
+  }
 }
 
 function loadState() {
@@ -42,9 +160,7 @@ function loadState() {
         parsed.weeks[0].cells
       ) {
         appState = parsed;
-        if (!Array.isArray(appState.deletedGoogleTaskIds)) {
-          appState.deletedGoogleTaskIds = [];
-        }
+        ensureStateCollections(appState);
         for (const week of appState.weeks) {
           for (const mod of appState.modules) {
             const list = week.cells[mod.shortName] || [];
@@ -53,6 +169,7 @@ function loadState() {
             });
           }
         }
+        purgeTombstonedTasksFromState(appState);
         return;
       }
     }
@@ -63,22 +180,32 @@ function loadState() {
   const restored = restoreSilentBackgroundBackupIfNeeded();
   if (restored) {
     appState = restored;
+    ensureStateCollections(appState);
+    purgeTombstonedTasksFromState(appState);
     return;
   }
 
   if (typeof INITIAL_DATA === 'undefined') {
-    appState = { modules: [], weeks: [], deletedGoogleTaskIds: [] };
+    appState = {
+      modules: [],
+      weeks: [],
+      deletedGoogleTaskIds: [],
+      deletedGoogleEventIds: [],
+      deletedTaskTombstones: {},
+      deletedDocIds: {}
+    };
     return;
   }
 
   appState = JSON.parse(JSON.stringify(INITIAL_DATA));
-  appState.deletedGoogleTaskIds = [];
+  ensureStateCollections(appState);
   saveState();
 }
 
 function saveState() {
   try {
     if (!appState) return;
+    ensureStateCollections(appState);
     appState.lastUpdated = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     saveSilentBackgroundBackup(appState);
@@ -110,8 +237,8 @@ function restoreSilentBackgroundBackupIfNeeded() {
 }
 
 /* =========================================================
-   2. SPEICHERSCHONENDE INDEXED-DB (METADATEN GETRENNT VON BLOBS)
-      INKL. SORTIER-UNTERSTÜTZUNG (sortOrder)
+   3. SPEICHERSCHONENDE INDEXED-DB (METADATEN GETRENNT VON BLOBS)
+      INKL. TASK-HASH & DETERMINISTISCHER SORTIERREIHENFOLGE
    ========================================================= */
 function openDocsDB() {
   if (docsDbPromise) return docsDbPromise;
@@ -159,7 +286,14 @@ function stripHeavyFieldsFromMeta(record) {
   const meta = { ...record };
   delete meta.dataUrl;
   delete meta.blob;
-  if (typeof meta.sortOrder !== 'number') {
+  meta.weekLabel = String(meta.weekLabel || '').replace(/\n/g, ' ').trim();
+  meta.taskText = stripModuleBracketsFromText(meta.taskText || '', meta.module || '');
+  if (meta.taskText) {
+    meta.taskHash = computeTaskHash(meta.module, meta.weekLabel, meta.taskText);
+  } else {
+    meta.taskHash = '';
+  }
+  if (typeof meta.sortOrder !== 'number' || isNaN(meta.sortOrder)) {
     meta.sortOrder = meta.uploadedAt || Date.now();
   }
   return meta;
@@ -170,7 +304,10 @@ function sortDocsByOrder(list) {
     const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : (a.uploadedAt || 0);
     const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : (b.uploadedAt || 0);
     if (orderA !== orderB) return orderA - orderB;
-    return (a.uploadedAt || 0) - (b.uploadedAt || 0);
+    const timeA = a.uploadedAt || 0;
+    const timeB = b.uploadedAt || 0;
+    if (timeA !== timeB) return timeA - timeB;
+    return String(a.id || '').localeCompare(String(b.id || ''));
   });
 }
 
@@ -211,7 +348,11 @@ async function refreshDocsCache() {
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => resolve([]);
     });
-    cachedDocsList = sortDocsByOrder(metaList.map(stripHeavyFieldsFromMeta));
+    const deletedDocsMap = appState?.deletedDocIds || {};
+    const validMeta = metaList
+      .filter(m => !deletedDocsMap[m.id])
+      .map(stripHeavyFieldsFromMeta);
+    cachedDocsList = sortDocsByOrder(validMeta);
   } catch (e) {
     console.error('Fehler beim Laden des Dokumenten-Caches:', e);
     cachedDocsList = [];
@@ -228,6 +369,11 @@ async function putDocRecordInDB(docRecord, explicitBlob = null) {
   if (blobToSave) {
     cleanMeta.hasLocalFile = true;
     cleanMeta.sizeBytes = blobToSave.size || cleanMeta.sizeBytes || 0;
+  }
+
+  if (appState?.deletedDocIds && appState.deletedDocIds[cleanMeta.id]) {
+    delete appState.deletedDocIds[cleanMeta.id];
+    saveState();
   }
 
   await new Promise((resolve, reject) => {
@@ -265,7 +411,12 @@ async function getDocBlobFromDB(docId) {
   }
 }
 
-async function deleteDocRecordFromDB(docId) {
+async function deleteDocRecordFromDB(docId, recordTombstone = true) {
+  if (recordTombstone && appState) {
+    ensureStateCollections(appState);
+    appState.deletedDocIds[docId] = Date.now();
+    saveState();
+  }
   const db = await openDocsDB();
   await new Promise((resolve) => {
     const tx = db.transaction([DOCS_META_STORE, DOCS_BLOB_STORE], 'readwrite');
@@ -278,7 +429,7 @@ async function deleteDocRecordFromDB(docId) {
 }
 
 /* =========================================================
-   3. DATUM- & FORMATIERUNGS-HELFER
+   4. DATUM- & FORMATIERUNGS-HELFER
    ========================================================= */
 function parseWeekDates(weekLabel) {
   if (!weekLabel) return null;
@@ -361,7 +512,7 @@ function escapeAttr(str) {
 }
 
 /* =========================================================
-   4. STATISTIK-BERECHNUNG
+   5. STATISTIK-BERECHNUNG
    ========================================================= */
 function calculateStats() {
   const moduleStats = {};

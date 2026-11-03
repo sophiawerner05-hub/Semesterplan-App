@@ -1,6 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, MITNAHME BEI AUFGABEN-UMZUG,
-   FREIE SORTIERUNG VON DOKUMENTEN OHNE AUFGABE & HANDY-VORSCHAU (docs-manager.js)
+   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, ROBUSTE AUFGABEN-KOPPLUNG
+   ÜBER TASK-HASH, DETERMINISTISCHE SORTIERUNG & AUTO-SYNC (docs-manager.js)
    ========================================================= */
 let draggedDocId = null;
 let draggedDocFolderGroup = null;
@@ -31,46 +31,85 @@ function toggleDocActionMenu(event, menuId) {
 }
 
 /* =========================================================
-   2. DOKUMENTE FÜR AUFGABEN, WOCHEN & ALLGEMEINE SPALTEN-KOPFZEILE
+   2. FEHLERTOLERANTE AUFGABEN- & WOCHEN-ZUORDNUNG
+      (Auch nach Neustart oder auf Zweitgeräten immer 100 % stabil!)
    ========================================================= */
 function normalizeWeekLabelOneLine(lbl) {
   return String(lbl || '').replace(/\n/g, ' ').trim();
+}
+
+function isSameWeekLabelOrId(docWeekLabel, targetWeekObj) {
+  if (!targetWeekObj) return false;
+  const docWkNorm = normalizeWeekLabelOneLine(docWeekLabel);
+  if (!docWkNorm) return false;
+  const targetWkNorm = normalizeWeekLabelOneLine(targetWeekObj.weekLabel);
+  if (docWkNorm === targetWkNorm) return true;
+  return resolveWeekIdFromLabelOrId(docWkNorm) === targetWeekObj.id;
+}
+
+function getNextSortOrderInScope(moduleName, weekLabelOneLine, taskText = '') {
+  const wkId = resolveWeekIdFromLabelOrId(weekLabelOneLine);
+  const normTask = normalizeTaskTextForMatch(taskText, moduleName);
+  let maxOrder = 0;
+  for (const d of cachedDocsList) {
+    if (d.module !== moduleName) continue;
+    if (resolveWeekIdFromLabelOrId(d.weekLabel) !== wkId) continue;
+    if (normalizeTaskTextForMatch(d.taskText || '', moduleName) !== normTask) continue;
+    const ord = typeof d.sortOrder === 'number' ? d.sortOrder : 0;
+    if (ord > maxOrder) maxOrder = ord;
+  }
+  return maxOrder > 0 ? maxOrder + 10 : 10;
 }
 
 function getDocsForTask(weekIdx, shortName, taskText) {
   const week = appState?.weeks?.[weekIdx];
   if (!week) return [];
   const wkOneLine = normalizeWeekLabelOneLine(week.weekLabel);
-  const cleanTask = stripModuleBracketsFromText(taskText, shortName).toLowerCase();
-  const taskTokens = extractTaskTokens(cleanTask);
+  const cleanTaskNorm = normalizeTaskTextForMatch(taskText, shortName);
+  if (!cleanTaskNorm) return [];
+
+  const expectedHash = computeTaskHash(shortName, week.id, taskText);
+  const taskTokens = extractTaskTokens(cleanTaskNorm);
 
   const matched = cachedDocsList.filter(doc => {
     if (doc.module !== shortName) return false;
-    const docWeek = normalizeWeekLabelOneLine(doc.weekLabel);
-    const docTask = stripModuleBracketsFromText(doc.taskText || '', shortName).toLowerCase();
 
-    if (docTask && docTask === cleanTask && (!docWeek || docWeek === wkOneLine)) {
+    // 1. Primärer Vergleich über den eindeutigen Task-Hash (immun gegen Drive-Textkürzungen!)
+    if (doc.taskHash && doc.taskHash === expectedHash) {
       return true;
     }
-    if (doc.manualOverride) {
-      return docWeek === wkOneLine && docTask === cleanTask;
+
+    const docTaskNorm = normalizeTaskTextForMatch(doc.taskText || '', shortName);
+    const sameWeek = !doc.weekLabel || isSameWeekLabelOrId(doc.weekLabel, week);
+
+    // 2. Exakter oder (durch frühere Drive-Limits) gekürzter Text-Abgleich
+    if (docTaskNorm && sameWeek) {
+      if (docTaskNorm === cleanTaskNorm) return true;
+      if (docTaskNorm.length >= 24 && cleanTaskNorm.startsWith(docTaskNorm)) return true;
+      if (cleanTaskNorm.length >= 24 && docTaskNorm.startsWith(cleanTaskNorm)) return true;
     }
-    if (docWeek === wkOneLine && !docTask && taskTokens.length > 0) {
-      const docTokens = extractTaskTokens(doc.fileName + ' ' + doc.title);
+
+    if (doc.manualOverride) {
+      return false;
+    }
+
+    // 3. Automatischer Token-Abgleich, falls das Dokument in derselben Woche ohne speziellen Aufgabentext liegt
+    if (isSameWeekLabelOrId(doc.weekLabel, week) && !docTaskNorm && taskTokens.length > 0) {
+      const docTokens = extractTaskTokens((doc.fileName || '') + ' ' + (doc.title || ''));
       if (taskTokens.some(t => docTokens.includes(t))) return true;
     }
     return false;
   });
+
   return sortDocsByOrder(matched);
 }
 
 function getRemainingWeekDocs(weekIdx, shortName, shownDocIds) {
   const week = appState?.weeks?.[weekIdx];
   if (!week) return [];
-  const wkOneLine = normalizeWeekLabelOneLine(week.weekLabel);
   const remaining = cachedDocsList.filter(doc =>
     doc.module === shortName &&
-    normalizeWeekLabelOneLine(doc.weekLabel) === wkOneLine &&
+    isSameWeekLabelOrId(doc.weekLabel, week) &&
     !shownDocIds.has(doc.id)
   );
   return sortDocsByOrder(remaining);
@@ -97,16 +136,20 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
   const cleanNewTask = stripModuleBracketsFromText(newTaskText, newMod);
   const newWeekOneLine = normalizeWeekLabelOneLine(newWeek.weekLabel);
 
-  // Ermittle alle Dokumente, die bisher an dieser Aufgabe hingen
   const attachedDocs = getDocsForTask(oldWeekIdx, oldMod, cleanOldTask);
   if (attachedDocs.length === 0) return 0;
 
   let movedDocsCount = 0;
+  let orderCounter = getNextSortOrderInScope(newMod, newWeekOneLine, cleanNewTask);
+
   for (const doc of attachedDocs) {
     doc.module = newMod;
     doc.weekLabel = newWeekOneLine;
     doc.taskText = cleanNewTask;
+    doc.taskHash = computeTaskHash(newMod, newWeek.id, cleanNewTask);
     doc.title = formatDocTitleForTask(cleanNewTask, doc.category, doc.fileName);
+    doc.sortOrder = orderCounter;
+    orderCounter += 10;
     doc.manualOverride = true;
     doc.needsDriveUpdate = true;
     doc.updatedAt = Date.now();
@@ -116,26 +159,25 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
 
   if (movedDocsCount > 0) {
     await refreshDocsCache();
+    saveState();
+    if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
   }
   return movedDocsCount;
 }
 
 /* =========================================================
    4. REIHENFOLGE VON DOKUMENTEN (OHNE ODER MIT AUFGABE) ÄNDERN
-      - Per Button im ⋯-Menü ("⬅️ Weiter nach vorne" / "➡️ Weiter nach hinten")
-      - Oder per Drag & Drop direkt von Dokument-Chip auf Dokument-Chip
    ========================================================= */
 function getPeerDocsInSameScope(doc) {
   if (!doc) return [];
-  const docWk = normalizeWeekLabelOneLine(doc.weekLabel);
-  const docTask = stripModuleBracketsFromText(doc.taskText || '', doc.module).toLowerCase();
+  const docWkId = resolveWeekIdFromLabelOrId(doc.weekLabel);
+  const docTaskNorm = normalizeTaskTextForMatch(doc.taskText || '', doc.module);
 
-  // Wenn das Dokument keine Aufgabe hat, sind seine Nachbarn alle unzugeordneten Dokumente derselben Zelle / Kopfzeile
   const peers = cachedDocsList.filter(d => {
     if (d.module !== doc.module) return false;
-    if (normalizeWeekLabelOneLine(d.weekLabel) !== docWk) return false;
-    const dTask = stripModuleBracketsFromText(d.taskText || '', d.module).toLowerCase();
-    return dTask === docTask;
+    if (resolveWeekIdFromLabelOrId(d.weekLabel) !== docWkId) return false;
+    const dTaskNorm = normalizeTaskTextForMatch(d.taskText || '', d.module);
+    return dTaskNorm === docTaskNorm;
   });
   return sortDocsByOrder(peers);
 }
@@ -155,7 +197,6 @@ async function moveDocOrder(docId, direction, event) {
     return;
   }
 
-  // Normalisiere sortOrder innerhalb dieser Gruppe auf saubere Schritte (10, 20, 30...)
   peers.forEach((p, i) => {
     p.sortOrder = (i + 1) * 10;
   });
@@ -169,13 +210,17 @@ async function moveDocOrder(docId, direction, event) {
   doc.sortOrder = otherDoc.sortOrder;
   otherDoc.sortOrder = tempOrder;
 
+  const now = Date.now();
   for (const p of peers) {
-    p.updatedAt = Date.now();
+    p.updatedAt = now;
+    p.needsDriveUpdate = true;
     await putDocRecordInDB(p);
   }
   await refreshDocsCache();
+  saveState();
   if (typeof renderAll === 'function') renderAll();
-  showToast('↕️ Dokumenten-Reihenfolge angepasst!');
+  showToast('↕️ Dokumenten-Reihenfolge gespeichert!');
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 function handleDocChipDragOver(event) {
@@ -203,10 +248,13 @@ async function handleDocChipDropOnChip(event, targetDocId) {
   const tgtDoc = cachedDocsList.find(d => d.id === targetDocId);
   if (!srcDoc || !tgtDoc) return;
 
-  // Wenn das gezogene Dokument in eine andere Zelle/Gruppe gezogen wurde, übernimmt es zuerst den Ort des Ziel-Dokuments
   srcDoc.module = tgtDoc.module;
   srcDoc.weekLabel = normalizeWeekLabelOneLine(tgtDoc.weekLabel);
-  srcDoc.taskText = tgtDoc.taskText || '';
+  srcDoc.taskText = stripModuleBracketsFromText(tgtDoc.taskText || '', tgtDoc.module);
+  srcDoc.taskHash = srcDoc.taskText ? computeTaskHash(srcDoc.module, srcDoc.weekLabel, srcDoc.taskText) : '';
+  if (srcDoc.taskText) {
+    srcDoc.title = formatDocTitleForTask(srcDoc.taskText, srcDoc.category, srcDoc.fileName);
+  }
   srcDoc.manualOverride = true;
   srcDoc.needsDriveUpdate = true;
 
@@ -214,15 +262,19 @@ async function handleDocChipDropOnChip(event, targetDocId) {
   const targetIndex = peers.findIndex(p => p.id === tgtDoc.id);
   peers.splice(targetIndex >= 0 ? targetIndex : peers.length, 0, srcDoc);
 
+  const now = Date.now();
   for (let i = 0; i < peers.length; i++) {
     peers[i].sortOrder = (i + 1) * 10;
-    peers[i].updatedAt = Date.now();
+    peers[i].updatedAt = now;
+    peers[i].needsDriveUpdate = true;
     await putDocRecordInDB(peers[i]);
   }
 
   await refreshDocsCache();
+  saveState();
   if (typeof renderAll === 'function') renderAll();
   showToast('↕️ Dokumenten-Anordnung aktualisiert!');
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }
 
 /* =========================================================
@@ -334,6 +386,7 @@ function renderGeneralModuleDocsCellHtml(shortName) {
 
 /* =========================================================
    6. DRAG & DROP FÜR DOKUMENTE, GANZE ORDNER & PC-DATEIEN
+      (MIT DETERMINISTISCHER SORTIERUNG & SOFORTIGEM AUTO-SYNC)
    ========================================================= */
 function handleDocDragStart(event, docId) {
   event.stopPropagation();
@@ -368,25 +421,35 @@ function handleDocDragEnd() {
 
 async function assignDocIdsToTarget(docIds, targetMod, targetWeekLabel, targetTaskText = '') {
   if (!Array.isArray(docIds) || docIds.length === 0) return 0;
+  const cleanWeek = normalizeWeekLabelOneLine(targetWeekLabel);
+  const cleanTask = targetTaskText ? stripModuleBracketsFromText(targetTaskText, targetMod) : '';
+  let nextOrder = getNextSortOrderInScope(targetMod, cleanWeek, cleanTask);
   let count = 0;
+
   for (const id of docIds) {
     const doc = cachedDocsList.find(d => d.id === id);
     if (!doc) continue;
     doc.module = targetMod;
-    doc.weekLabel = normalizeWeekLabelOneLine(targetWeekLabel);
-    doc.taskText = targetTaskText ? stripModuleBracketsFromText(targetTaskText, targetMod) : '';
-    if (doc.taskText) {
-      doc.title = formatDocTitleForTask(doc.taskText, doc.category, doc.fileName);
+    doc.weekLabel = cleanWeek;
+    doc.taskText = cleanTask;
+    doc.taskHash = cleanTask ? computeTaskHash(targetMod, cleanWeek, cleanTask) : '';
+    if (cleanTask) {
+      doc.title = formatDocTitleForTask(cleanTask, doc.category, doc.fileName);
     }
+    doc.sortOrder = nextOrder;
+    nextOrder += 10;
     doc.manualOverride = true;
     doc.needsDriveUpdate = true;
     doc.updatedAt = Date.now();
     await putDocRecordInDB(doc);
     count++;
   }
+
   if (count > 0) {
     await refreshDocsCache();
+    saveState();
     if (typeof renderAll === 'function') renderAll();
+    if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
   }
   return count;
 }
@@ -399,7 +462,7 @@ async function assignDocToTaskByDragDrop(docIdOrIds, targetWeekIdx, targetMod, t
   const cleanTaskText = stripModuleBracketsFromText(taskItem.text, targetMod);
   const movedCount = await assignDocIdsToTarget(ids, targetMod, week.weekLabel, cleanTaskText);
   if (movedCount) {
-    showToast(`📎 ${movedCount > 1 ? movedCount + ' Dateien' : 'Dokument'} der Aufgabe „${cleanTaskText}“ zugeordnet!`);
+    showToast(`📎 ${movedCount > 1 ? movedCount + ' Dateien' : 'Dokument'} fest der Aufgabe „${cleanTaskText}“ zugeordnet!`);
   }
 }
 
@@ -412,14 +475,19 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
     for (const file of files) {
       if (isCurrentActionCancelled()) break;
       const guess = analyzeFileForSmartSorting(file.name, targetMod, '', targetWeekLabel, targetTaskText, true);
+      const finalWeek = normalizeWeekLabelOneLine(targetWeekLabel || guess.weekLabel);
+      const finalTask = stripModuleBracketsFromText(targetTaskText || guess.taskText || '', targetMod);
+      const nextOrd = getNextSortOrderInScope(targetMod, finalWeek, finalTask);
+
       const docRecord = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         module: targetMod,
         category: guess.category,
-        weekLabel: normalizeWeekLabelOneLine(targetWeekLabel || guess.weekLabel),
-        taskText: targetTaskText || guess.taskText || '',
-        title: (targetTaskText || guess.taskText)
-          ? formatDocTitleForTask(targetTaskText || guess.taskText, guess.category, file.name)
+        weekLabel: finalWeek,
+        taskText: finalTask,
+        taskHash: finalTask ? computeTaskHash(targetMod, finalWeek, finalTask) : '',
+        title: finalTask
+          ? formatDocTitleForTask(finalTask, guess.category, file.name)
           : file.name.replace(/\.[^/.]+$/, ''),
         fileName: file.name,
         mimeType: file.type || 'application/pdf',
@@ -427,7 +495,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
         hasLocalFile: true,
         manualOverride: true,
         needsDriveUpdate: true,
-        sortOrder: Date.now(),
+        sortOrder: nextOrd,
         uploadedAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -435,11 +503,12 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
       newDocs.push(docRecord);
     }
     await refreshDocsCache();
+    saveState();
     if (typeof renderAll === 'function') renderAll();
-    showToast(`✅ ${newDocs.length} Datei(en) direkt in ${targetMod} abgelegt!`);
+    showToast(`✅ ${newDocs.length} Datei(en) direkt in ${targetMod} gespeichert!`);
 
-    if (typeof isGoogleConnected === 'function' && isGoogleConnected() && typeof syncDocumentsWithGoogleDrive === 'function') {
-      await syncDocumentsWithGoogleDrive(true);
+    if (typeof scheduleAutoDriveSync === 'function') {
+      scheduleAutoDriveSync(400);
     }
   } finally {
     hideLoading();
@@ -477,6 +546,7 @@ async function recalculateTaskDocTitles(moduleName, weekLabel, taskText) {
   for (const doc of cachedDocsList) {
     if (doc.module === moduleName && normalizeWeekLabelOneLine(doc.weekLabel) === wkNorm && doc.taskText === taskText) {
       doc.title = formatDocTitleForTask(taskText, doc.category, doc.fileName);
+      doc.taskHash = computeTaskHash(moduleName, wkNorm, taskText);
       await putDocRecordInDB(doc);
     }
   }
@@ -486,9 +556,9 @@ async function sanitizeAndDeduplicateDocsSilent() {
   await refreshDocsCache();
   const seenKeys = new Set();
   for (const doc of [...cachedDocsList]) {
-    const key = `${doc.module}|${(doc.fileName || '').toLowerCase()}|${doc.sizeBytes || 0}`;
+    const key = `${doc.module}|${(doc.fileName || '').toLowerCase()}|${doc.sizeBytes || 0}|${doc.taskHash || ''}`;
     if (seenKeys.has(key)) {
-      await deleteDocRecordFromDB(doc.id);
+      await deleteDocRecordFromDB(doc.id, false);
     } else {
       seenKeys.add(key);
     }
@@ -497,7 +567,6 @@ async function sanitizeAndDeduplicateDocsSilent() {
 
 /* =========================================================
    7. TAB 3: MODUL-DOKUMENTENSPEICHER RENDERN
-      (INKL. FREIER SORTIERUNG FÜR DOKUMENTE OHNE AUFGABE)
    ========================================================= */
 function renderModuleDocsView() {
   const grid = document.getElementById('moduleDocsGrid');
@@ -633,7 +702,7 @@ function renderModuleDocsView() {
 }
 
 /* =========================================================
-   8. UPLOAD-DIALOG MIT REAKTIVER VORAUSWAHL-ERKENNUNG
+   8. UPLOAD-DIALOG MIT SICHERER SPEICHERUNG DER AUFGABEN-ZUORDNUNG
    ========================================================= */
 function populateUploadDocModalDropdowns(preMod = '', preCat = 'Vorlesung', preWeek = '') {
   const modSel = document.getElementById('docModuleSelect');
@@ -666,13 +735,11 @@ function openUploadDocModal(preMod = '', preCat = 'Vorlesung', preWeek = '', pre
   const effectiveCat = preCat || (docsCatFilter && docsCatFilter !== 'all' ? docsCatFilter : 'Vorlesung');
 
   populateUploadDocModalDropdowns(effectiveMod, effectiveCat, preWeek);
-  window._preselectedUploadTaskText = preTaskText || '';
+  window._preselectedUploadTaskText = preTaskText ? stripModuleBracketsFromText(preTaskText, effectiveMod) : '';
   renderPendingUploadQueue();
   openModal('uploadDocModal');
 }
 
-/* Wenn der Nutzer oben im Upload-Modal nachträglich Modul, Kategorie oder Woche umstellt,
-   werden alle Dateien in der Warteschlange sofort passend zur neuen Vorauswahl neu erkannt! */
 function onUploadPreselectionChanged() {
   if (pendingUploadQueue.length === 0) return;
   const defaultMod = document.getElementById('docModuleSelect')?.value || 'ModSim';
@@ -763,16 +830,19 @@ function handleDocFilesSelected(fileList) {
 
 function buildTasksOptionsForModAndWeek(modName, weekLabelOneLine, selectedTask = '') {
   const normWk = normalizeWeekLabelOneLine(weekLabelOneLine);
-  const weekObj = (appState?.weeks || []).find(w => normalizeWeekLabelOneLine(w.weekLabel) === normWk);
+  const weekObj = (appState?.weeks || []).find(w => isSameWeekLabelOrId(normWk, w));
   const tasks = weekObj ? (weekObj.cells[modName] || []) : [];
+  const cleanSel = stripModuleBracketsFromText(selectedTask || '', modName);
   let html = `<option value="">– Ohne spezifische Aufgabe (Wochen-/Modul-Ordner) –</option>`;
+  let matchedAny = false;
   for (const t of tasks) {
     const clean = stripModuleBracketsFromText(t.text, modName);
-    const sel = (clean === selectedTask) ? 'selected' : '';
-    html += `<option value="${escapeAttr(clean)}" ${sel}>🎯 ${escapeHtml(clean)}</option>`;
+    const isSel = (normalizeTaskTextForMatch(clean, modName) === normalizeTaskTextForMatch(cleanSel, modName) && cleanSel !== '');
+    if (isSel) matchedAny = true;
+    html += `<option value="${escapeAttr(clean)}" ${isSel ? 'selected' : ''}>🎯 ${escapeHtml(clean)}</option>`;
   }
-  if (selectedTask && !tasks.some(t => stripModuleBracketsFromText(t.text, modName) === selectedTask)) {
-    html += `<option value="${escapeAttr(selectedTask)}" selected>🎯 ${escapeHtml(selectedTask)}</option>`;
+  if (cleanSel && !matchedAny) {
+    html += `<option value="${escapeAttr(cleanSel)}" selected>🎯 ${escapeHtml(cleanSel)}</option>`;
   }
   return html;
 }
@@ -782,15 +852,8 @@ function updatePendingQueueItem(index, field, value) {
   if (!entry) return;
   entry[field] = value;
 
-  if (field === 'module' || field === ' category') {
-    const reGuess = analyzeFileForSmartSorting(
-      entry.fileName,
-      entry.module,
-      entry.category,
-      field === 'module' ? '' : entry.weekLabel,
-      '',
-      true
-    );
+  if (field === 'module') {
+    const reGuess = analyzeFileForSmartSorting(entry.fileName, entry.module, entry.category, '', '', true);
     entry.weekLabel = reGuess.weekLabel;
     entry.taskText = reGuess.taskText;
     entry.title = reGuess.title;
@@ -801,7 +864,7 @@ function updatePendingQueueItem(index, field, value) {
 
   if (field === 'weekLabel') {
     const normWk = normalizeWeekLabelOneLine(entry.weekLabel);
-    const wkObj = (appState?.weeks || []).find(w => normalizeWeekLabelOneLine(w.weekLabel) === normWk);
+    const wkObj = (appState?.weeks || []).find(w => isSameWeekLabelOrId(normWk, w));
     const tasks = wkObj ? (wkObj.cells[entry.module] || []) : [];
     const matchingCatTask = tasks.find(t => doesTaskMatchCategory(t.text, entry.category));
     if (matchingCatTask) {
@@ -819,6 +882,17 @@ function updatePendingQueueItem(index, field, value) {
   }
 
   if (field === 'category' || field === 'taskText') {
+    // Falls eine Aufgabe ausgewählt wurde, aber weekLabel noch leer war, finde automatisch die passende Woche zur Aufgabe
+    if (field === 'taskText' && entry.taskText && !entry.weekLabel && appState?.weeks) {
+      const foundWk = appState.weeks.find(w =>
+        (w.cells[entry.module] || []).some(t =>
+          normalizeTaskTextForMatch(t.text, entry.module) === normalizeTaskTextForMatch(entry.taskText, entry.module)
+        )
+      );
+      if (foundWk) {
+        entry.weekLabel = normalizeWeekLabelOneLine(foundWk.weekLabel);
+      }
+    }
     entry.title = entry.taskText
       ? formatDocTitleForTask(entry.taskText, entry.category, entry.fileName)
       : formatDocTitleForTask('', entry.category, entry.fileName);
@@ -868,7 +942,7 @@ function renderPendingUploadQueue() {
     const wkOpts = `<option value="" ${!item.weekLabel ? 'selected' : ''}>📌 Allgemein (ohne Wochenbezug)</option>` +
       (appState?.weeks || []).map(w => {
         const one = normalizeWeekLabelOneLine(w.weekLabel);
-        return `<option value="${escapeAttr(one)}" ${one === normalizeWeekLabelOneLine(item.weekLabel) ? 'selected' : ''}>${escapeHtml(one)}</option>`;
+        return `<option value="${escapeAttr(one)}" ${isSameWeekLabelOrId(item.weekLabel, w) ? 'selected' : ''}>${escapeHtml(one)}</option>`;
       }).join('');
 
     const taskOpts = buildTasksOptionsForModAndWeek(item.module, item.weekLabel, item.taskText);
@@ -913,16 +987,19 @@ async function handleSaveUploadedDocs() {
   startCancelableOperation(`Speichere ${pendingUploadQueue.length} Dokument(e)...`);
   try {
     const savedDocs = [];
-    let baseOrder = Date.now();
     for (const item of pendingUploadQueue) {
       if (isCurrentActionCancelled()) break;
-      baseOrder += 10;
+      const cleanWeek = normalizeWeekLabelOneLine(item.weekLabel);
+      const cleanTask = stripModuleBracketsFromText(item.taskText || '', item.module);
+      const nextOrd = getNextSortOrderInScope(item.module, cleanWeek, cleanTask);
+
       const newDoc = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         module: item.module,
         category: item.category,
-        weekLabel: normalizeWeekLabelOneLine(item.weekLabel),
-        taskText: item.taskText || '',
+        weekLabel: cleanWeek,
+        taskText: cleanTask,
+        taskHash: cleanTask ? computeTaskHash(item.module, cleanWeek, cleanTask) : '',
         title: item.title || item.fileName.replace(/\.[^/.]+$/, ''),
         fileName: item.fileName,
         mimeType: item.mimeType || 'application/pdf',
@@ -930,7 +1007,7 @@ async function handleSaveUploadedDocs() {
         hasLocalFile: true,
         manualOverride: true,
         needsDriveUpdate: true,
-        sortOrder: baseOrder,
+        sortOrder: nextOrd,
         uploadedAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -942,12 +1019,13 @@ async function handleSaveUploadedDocs() {
     window._preselectedUploadTaskText = '';
     closeModal('uploadDocModal');
     await refreshDocsCache();
+    saveState();
     if (typeof renderAll === 'function') renderAll();
 
     if (typeof isGoogleConnected === 'function' && isGoogleConnected() && typeof syncDocumentsWithGoogleDrive === 'function') {
       await syncDocumentsWithGoogleDrive(false);
     } else {
-      showToast(`✅ ${savedDocs.length} Dokument(e) lokal im Modulspeicher gesichert!`);
+      showToast(`✅ ${savedDocs.length} Dokument(e) fest zugeordnet & lokal gesichert!`);
     }
   } finally {
     hideLoading();
@@ -955,8 +1033,7 @@ async function handleSaveUploadedDocs() {
 }
 
 /* =========================================================
-   9. IPAD- & HANDY-SICHERES BEARBEITEN VON KATEGORIE, MODUL,
-      WOCHE, AUFGABE & POSITION (editDocModal)
+   9. BEARBEITEN VON KATEGORIE, MODUL, WOCHE & AUFGABE (editDocModal)
    ========================================================= */
 function ensureEditDocModalExists() {
   if (document.getElementById('editDocModal')) return;
@@ -1092,25 +1169,35 @@ async function saveEditedDoc() {
   const newMod = document.getElementById('editDocModuleSelect')?.value || doc.module;
   const newCat = document.getElementById('editDocCategorySelect')?.value || doc.category;
   const newWeek = normalizeWeekLabelOneLine(document.getElementById('editDocWeekSelect')?.value || '');
-  const newTask = (document.getElementById('editDocTaskSelect')?.value || '').trim();
+  const newTask = stripModuleBracketsFromText(document.getElementById('editDocTaskSelect')?.value || '', newMod);
+
+  const scopeChanged =
+    doc.module !== newMod ||
+    normalizeWeekLabelOneLine(doc.weekLabel) !== newWeek ||
+    normalizeTaskTextForMatch(doc.taskText || '', doc.module) !== normalizeTaskTextForMatch(newTask, newMod);
 
   doc.module = newMod;
   doc.category = newCat;
   doc.weekLabel = newWeek;
   doc.taskText = newTask;
+  doc.taskHash = newTask ? computeTaskHash(newMod, newWeek, newTask) : '';
   doc.title = newTitle || (newTask ? formatDocTitleForTask(newTask, newCat, doc.fileName) : doc.fileName);
+  if (scopeChanged) {
+    doc.sortOrder = getNextSortOrderInScope(newMod, newWeek, newTask);
+  }
   doc.manualOverride = true;
   doc.needsDriveUpdate = true;
   doc.updatedAt = Date.now();
 
   await putDocRecordInDB(doc);
   await refreshDocsCache();
+  saveState();
   closeModal('editDocModal');
   if (typeof renderAll === 'function') renderAll();
-  showToast(`✅ Dokument aktualisiert (${doc.module} • ${doc.category})!`);
+  showToast(`✅ Dokument gespeichert (${doc.module} • ${doc.category})!`);
 
-  if (typeof isGoogleConnected === 'function' && isGoogleConnected() && doc.driveFileId && typeof syncSingleDocMetadataToDrive === 'function') {
-    syncSingleDocMetadataToDrive(doc).then(() => putDocRecordInDB(doc));
+  if (typeof scheduleAutoDriveSync === 'function') {
+    scheduleAutoDriveSync(500);
   }
 }
 
@@ -1122,7 +1209,6 @@ async function deleteDocFromEditModal() {
 
 /* =========================================================
    10. HANDY- & IPAD-OPTIMIERTE DOKUMENT-VORSCHAU
-       (VOLLBILD, MEHRSEITIGER PDF-VIEWER & SPEICHERFREIGABE)
    ========================================================= */
 function closePreviewModal() {
   closeModal('docPreviewModal');
@@ -1209,7 +1295,6 @@ async function previewModuleDoc(docId) {
       </div>
     `;
   } else {
-    // Auf Handy/iPad zeigt eine Info-Leiste direkt den nativen mehrseitigen Vollbild-Button mit Zoom-Unterstützung
     const mobileTopBar = isTouchMobile ? `
       <div class="doc-preview-mobile-bar">
         <span>📱 <strong>Tipp für Handy &amp; iPad:</strong> Für mehrseitiges Blättern &amp; Zoomen:</span>
@@ -1257,10 +1342,11 @@ async function deleteModuleDoc(docId) {
   const doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) return;
   const driveId = doc.driveFileId;
-  await deleteDocRecordFromDB(docId);
+  await deleteDocRecordFromDB(docId, true);
   if (typeof renderAll === 'function') renderAll();
-  showToast('🗑️ Dokument gelöscht.');
+  showToast('🗑️ Dokument dauerhaft gelöscht.');
   if (driveId && typeof isGoogleConnected === 'function' && isGoogleConnected() && typeof deleteDocFromGoogleDrive === 'function') {
-    deleteDocFromGoogleDrive(driveId);
+    await deleteDocFromGoogleDrive(driveId);
   }
+  if (typeof scheduleAutoDriveSync === 'function') scheduleAutoDriveSync();
 }

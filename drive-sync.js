@@ -1,15 +1,27 @@
 /* =========================================================
-   UNTERPROGRAMM 7: OPTIMIERTER GOOGLE DRIVE DOKUMENTEN- &
-   SNAPSHOT-SYNC INKL. SORTIERREIHENFOLGE (drive-sync.js)
-   - Nutzt native Binär-Blobs aus IndexedDB statt RAM-Base64
-   - Synchronisiert auch die Anordnung (sortOrder) von Dokumenten
-   - Überschreibt bei 2 Synchronisationsständen automatisch den ältesten
+   UNTERPROGRAMM 7: GOOGLE DRIVE DOKUMENTEN- & SNAPSHOT-SYNC
+   INKL. UTF-8-BYTE-SCHUTZ, TASK-HASH & SNAPSHOT-MERGE (drive-sync.js)
    ========================================================= */
 const DRIVE_SYNC_FOLDER_NAME = 'Semesterplan_App_Sync';
 const DRIVE_STATE_SNAPSHOT_PREFIX = 'semesterplan_sync_snapshot';
 
 let cachedDriveFolderId = null;
 let isDriveSyncInProgress = false;
+let autoDriveSyncTimer = null;
+let pendingDriveResyncRequested = false;
+
+function scheduleAutoDriveSync(delayMs = 1200) {
+  if (typeof isGoogleConnected !== 'function' || !isGoogleConnected()) return;
+  if (autoDriveSyncTimer) clearTimeout(autoDriveSyncTimer);
+  autoDriveSyncTimer = setTimeout(() => {
+    autoDriveSyncTimer = null;
+    if (isDriveSyncInProgress) {
+      pendingDriveResyncRequested = true;
+    } else {
+      syncDocumentsWithGoogleDrive(true);
+    }
+  }, delayMs);
+}
 
 async function triggerManualDriveSync() {
   if (typeof isGoogleConnected !== 'function' || !isGoogleConnected()) {
@@ -39,16 +51,40 @@ async function ensureDriveSyncFolder() {
   return cachedDriveFolderId;
 }
 
+/* Google Drive erlaubt pro appProperties-Eintrag max. 124 Bytes (Key + Value in UTF-8).
+   Diese Funktion schneidet Strings garantiert UTF-8-byte-sicher ab! */
+function utf8ByteSafePropValue(keyName, rawValue, maxTotalBytes = 120) {
+  const encoder = new TextEncoder();
+  const keyBytes = encoder.encode(String(keyName || '')).length;
+  const maxValBytes = Math.max(10, maxTotalBytes - keyBytes);
+  const str = String(rawValue ?? '');
+  if (encoder.encode(str).length <= maxValBytes) return str;
+
+  let out = '';
+  let usedBytes = 0;
+  for (const ch of str) {
+    const chBytes = encoder.encode(ch).length;
+    if (usedBytes + chBytes > maxValBytes) break;
+    out += ch;
+    usedBytes += chBytes;
+  }
+  return out;
+}
+
 function buildDriveAppProperties(docRecord) {
-  const safeSlice = (val, max = 100) => String(val || '').slice(0, max);
+  const taskHash = docRecord.taskHash || (docRecord.taskText
+    ? computeTaskHash(docRecord.module, docRecord.weekLabel, docRecord.taskText)
+    : '');
   return {
-    spDocId: safeSlice(docRecord.id, 95),
-    spModule: safeSlice(docRecord.module, 45),
-    spCategory: safeSlice(docRecord.category || 'Vorlesung', 45),
-    spWeekLabel: safeSlice(docRecord.weekLabel, 75),
-    spTaskText: safeSlice(docRecord.taskText, 95),
-    spTitle: safeSlice(docRecord.title, 95),
-    spSortOrder: String(docRecord.sortOrder || docRecord.uploadedAt || 0),
+    spDocId:          utf8ByteSafePropValue('spDocId', docRecord.id),
+    spModule:         utf8ByteSafePropValue('spModule', docRecord.module),
+    spCategory:       utf8ByteSafePropValue('spCategory', docRecord.category || 'Vorlesung'),
+    spWeekLabel:      utf8ByteSafePropValue('spWeekLabel', docRecord.weekLabel),
+    spTaskText:       utf8ByteSafePropValue('spTaskText', docRecord.taskText),
+    spTaskHash:       utf8ByteSafePropValue('spTaskHash', taskHash),
+    spTitle:          utf8ByteSafePropValue('spTitle', docRecord.title),
+    spSortOrder:      utf8ByteSafePropValue('spSortOrder', String(docRecord.sortOrder || docRecord.uploadedAt || 0)),
+    spUpdatedAt:      utf8ByteSafePropValue('spUpdatedAt', String(docRecord.updatedAt || docRecord.uploadedAt || Date.now())),
     spManualOverride: docRecord.manualOverride ? 'true' : 'false'
   };
 }
@@ -170,18 +206,151 @@ async function ensureDriveDocContentLoaded(docRecord) {
 }
 
 /* =========================================================
-   ROTATION VON 2 SYNC-STÄNDEN IN GOOGLE DRIVE
+   SNAPSHOT-LESEN & -SCHREIBEN (SYNCHRONISIERT AUCH LÖSCH-SPERREN,
+   AUFGABEN-ZUORDNUNGEN & SORTIERREIHENFOLGE GERÄTEÜBERGREIFEND)
    ========================================================= */
+async function pullAndMergeLatestDriveSnapshot(existingDriveFiles) {
+  if (!googleAccessToken || !appState || isCurrentActionCancelled()) return false;
+  const snapshots = (existingDriveFiles || [])
+    .filter(f => (f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX))
+    .sort((a, b) => new Date(b.modifiedTime || 0) - new Date(a.modifiedTime || 0)); // Neuester zuerst
+
+  if (snapshots.length === 0) return false;
+  const latestSnapshotFile = snapshots[0];
+
+  try {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${latestSnapshotFile.id}?alt=media`, {
+      headers: { 'Authorization': `Bearer ${googleAccessToken}` },
+      signal: getActiveAbortSignal()
+    });
+    if (!res.ok) return false;
+    const snap = await res.json();
+    if (!snap || typeof snap !== 'object') return false;
+
+    let anyStateChanged = false;
+    ensureStateCollections(appState);
+
+    // 1. Gelöschte Aufgaben-Tombstones geräteübergreifend zusammenführen
+    if (snap.deletedTaskTombstones && typeof snap.deletedTaskTombstones === 'object') {
+      for (const [sig, ts] of Object.entries(snap.deletedTaskTombstones)) {
+        if (!appState.deletedTaskTombstones[sig] || ts > appState.deletedTaskTombstones[sig]) {
+          appState.deletedTaskTombstones[sig] = ts;
+          anyStateChanged = true;
+        }
+      }
+    }
+
+    // 2. Gelöschte Dokument-IDs geräteübergreifend zusammenführen & lokal entfernen
+    if (snap.deletedDocIds && typeof snap.deletedDocIds === 'object') {
+      for (const [docId, ts] of Object.entries(snap.deletedDocIds)) {
+        if (!appState.deletedDocIds[docId]) {
+          appState.deletedDocIds[docId] = ts;
+          anyStateChanged = true;
+        }
+        if (cachedDocsList.some(d => d.id === docId)) {
+          await deleteDocRecordFromDB(docId, false);
+          anyStateChanged = true;
+        }
+      }
+    }
+
+    // 3. Entferne alle Aufgaben aus dem lokalen Plan, die auf einem anderen Gerät gelöscht wurden
+    if (purgeTombstonedTasksFromState(appState)) {
+      anyStateChanged = true;
+    }
+
+    // 4. Falls der Snapshot auf einem anderen Gerät neuere Aufgaben/Reihenfolgen hat, intelligent abgleichen
+    if (Array.isArray(snap.weeks) && Array.isArray(appState.weeks)) {
+      const snapUpdated = Number(snap.stateLastUpdated || snap.syncedAt || 0);
+      const localUpdated = Number(appState.lastUpdated || 0);
+
+      for (let wIdx = 0; wIdx < appState.weeks.length; wIdx++) {
+        const localWeek = appState.weeks[wIdx];
+        const snapWeek = snap.weeks.find(w => w.id === localWeek.id) || snap.weeks[wIdx];
+        if (!snapWeek || !snapWeek.cells) continue;
+
+        for (const mod of appState.modules) {
+          const sName = mod.shortName;
+          const localItems = localWeek.cells[sName] || [];
+          const snapItems = (snapWeek.cells[sName] || []).filter(
+            it => !isTaskTombstoned(sName, localWeek.id, it.text)
+          );
+
+          // Wenn der Snapshot neuer ist und Aufgaben enthält, die lokal fehlen oder umgeordnet wurden
+          if (snapUpdated > localUpdated) {
+            for (const sItem of snapItems) {
+              const normSnap = normalizeTaskTextForMatch(sItem.text, sName);
+              const existingLocal = localItems.find(li => normalizeTaskTextForMatch(li.text, sName) === normSnap);
+              if (!existingLocal) {
+                localItems.push({ ...sItem });
+                anyStateChanged = true;
+              } else if (existingLocal.done !== sItem.done || existingLocal.inProgress !== sItem.inProgress) {
+                existingLocal.done = sItem.done;
+                existingLocal.inProgress = sItem.inProgress;
+                anyStateChanged = true;
+              }
+            }
+          }
+          localWeek.cells[sName] = localItems;
+        }
+      }
+    }
+
+    // 5. Dokumenten-Zuordnungen (inkl. voller taskText, taskHash & sortOrder!) aus dem Snapshot wiederherstellen
+    if (Array.isArray(snap.docAssignments)) {
+      for (const sa of snap.docAssignments) {
+        if (!sa || !sa.id || (appState.deletedDocIds && appState.deletedDocIds[sa.id])) continue;
+        const localDoc = cachedDocsList.find(d =>
+          d.id === sa.id ||
+          (sa.driveFileId && d.driveFileId === sa.driveFileId)
+        );
+        if (localDoc && !localDoc.needsDriveUpdate) {
+          const snapDocTime = Number(sa.updatedAt || 0);
+          const localDocTime = Number(localDoc.updatedAt || localDoc.uploadedAt || 0);
+          const isMissingAssignment = !localDoc.taskText && sa.taskText;
+
+          if (snapDocTime > localDocTime || isMissingAssignment) {
+            localDoc.module = sa.module || localDoc.module;
+            localDoc.category = sa.category || localDoc.category;
+            localDoc.weekLabel = normalizeWeekLabelOneLine(sa.weekLabel !== undefined ? sa.weekLabel : localDoc.weekLabel);
+            localDoc.taskText = stripModuleBracketsFromText(sa.taskText !== undefined ? sa.taskText : localDoc.taskText, localDoc.module);
+            localDoc.taskHash = sa.taskHash || (localDoc.taskText ? computeTaskHash(localDoc.module, localDoc.weekLabel, localDoc.taskText) : '');
+            localDoc.title = sa.title || localDoc.title;
+            if (typeof sa.sortOrder === 'number') localDoc.sortOrder = sa.sortOrder;
+            localDoc.manualOverride = sa.manualOverride !== undefined ? !!sa.manualOverride : localDoc.manualOverride;
+            localDoc.updatedAt = Math.max(localDocTime, snapDocTime);
+            await putDocRecordInDB(localDoc);
+            anyStateChanged = true;
+          }
+        }
+      }
+    }
+
+    if (anyStateChanged) {
+      saveState();
+    }
+    return anyStateChanged;
+  } catch (e) {
+    console.warn('Snapshot-Merge Hinweis:', e);
+    return false;
+  }
+}
+
 async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
   if (!googleAccessToken || !appState || isCurrentActionCancelled()) return;
   const snapshots = (existingDriveFiles || [])
     .filter(f => (f.name || '').startsWith(DRIVE_STATE_SNAPSHOT_PREFIX))
     .sort((a, b) => new Date(a.modifiedTime || 0) - new Date(b.modifiedTime || 0));
 
+  ensureStateCollections(appState);
+
   const snapshotPayload = {
     syncedAt: Date.now(),
+    stateLastUpdated: appState.lastUpdated || Date.now(),
     modules: appState.modules,
     weeks: appState.weeks,
+    deletedTaskTombstones: appState.deletedTaskTombstones || {},
+    deletedDocIds: appState.deletedDocIds || {},
     docAssignments: cachedDocsList.map(d => ({
       id: d.id,
       driveFileId: d.driveFileId || '',
@@ -189,9 +358,10 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
       title: d.title || '',
       module: d.module,
       category: d.category,
-      weekLabel: d.weekLabel || '',
-      taskText: d.taskText || '',
-      sortOrder: d.sortOrder || d.uploadedAt || 0,
+      weekLabel: normalizeWeekLabelOneLine(d.weekLabel || ''),
+      taskText: stripModuleBracketsFromText(d.taskText || '', d.module),
+      taskHash: d.taskHash || (d.taskText ? computeTaskHash(d.module, d.weekLabel, d.taskText) : ''),
+      sortOrder: typeof d.sortOrder === 'number' ? d.sortOrder : (d.uploadedAt || 0),
       manualOverride: !!d.manualOverride,
       updatedAt: d.updatedAt || d.uploadedAt || 0
     }))
@@ -232,13 +402,30 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
 }
 
 /* =========================================================
+   AUFGABENTEXT ÜBER TASK-HASH WIEDERHERSTELLEN (FALLS GEKÜRZT)
+   ========================================================= */
+function resolveFullTaskTextByHash(moduleName, weekLabelOneLine, taskHash, fallbackTaskText = '') {
+  if (!taskHash || !appState?.weeks) return fallbackTaskText;
+  for (const w of appState.weeks) {
+    const items = w.cells?.[moduleName] || [];
+    for (const it of items) {
+      const cleanTxt = stripModuleBracketsFromText(it.text, moduleName);
+      if (computeTaskHash(moduleName, w.id, cleanTxt) === taskHash) {
+        return cleanTxt;
+      }
+    }
+  }
+  return fallbackTaskText;
+}
+
+/* =========================================================
    HAUPTFUNKTION: INKREMENTELLE DRIVE-SYNCHRONISATION
    ========================================================= */
 async function syncDocumentsWithGoogleDrive(silent = true) {
   if (!googleAccessToken || isDriveSyncInProgress) return;
   isDriveSyncInProgress = true;
   if (!silent) {
-    startCancelableOperation('Synchronisiere Dokumente mit Google Drive...');
+    startCancelableOperation('Synchronisiere Dokumente & Zuordnungen mit Google Drive...');
   }
   try {
     const folderId = await ensureDriveSyncFolder();
@@ -254,9 +441,13 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
     let updatedMetaCount = 0;
     let pulledCount = 0;
 
+    // 1. Zuerst Snapshot von Drive einlesen (damit Lösch-Sperren & volle Zuordnungen bekannt sind)
+    const snapshotMerged = await pullAndMergeLatestDriveSnapshot(allDriveFiles);
+
     const docsToUpload = cachedDocsList.filter(d => !d.driveFileId && d.hasLocalFile);
     let currentUploadIdx = 0;
 
+    // 2. Neue oder geänderte lokale Dateien zu Google Drive hochladen / Metadaten patchen
     for (const localDoc of cachedDocsList) {
       if (isCurrentActionCancelled()) break;
       try {
@@ -278,9 +469,20 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
       }
     }
 
+    // 3. Dateien von Google Drive prüfen & lokal ergänzen / aktualisieren
+    const deletedDocsMap = appState?.deletedDocIds || {};
+
     for (const df of docDriveFiles) {
       if (isCurrentActionCancelled()) break;
       const props = df.appProperties || {};
+      const docIdFromProps = props.spDocId || `doc_drive_${df.id}`;
+
+      // Falls dieses Dokument bereits gelöscht wurde, nicht wieder importieren, sondern auf Drive aufräumen
+      if (deletedDocsMap[docIdFromProps]) {
+        await deleteDocFromGoogleDrive(df.id);
+        continue;
+      }
+
       const existingLocal = cachedDocsList.find(d =>
         d.driveFileId === df.id ||
         (props.spDocId && d.id === props.spDocId) ||
@@ -294,13 +496,18 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
           await putDocRecordInDB(existingLocal);
         }
         if (props.spManualOverride === 'true' && !existingLocal.needsDriveUpdate) {
-          const remoteTime = df.modifiedTime ? new Date(df.modifiedTime).getTime() : 0;
-          const localTime = existingLocal.updatedAt || existingLocal.uploadedAt || 0;
-          if (remoteTime > localTime + 2000) {
-            existingLocal.module = props.spModule || existingLocal.module;
+          const remoteTime = Number(props.spUpdatedAt) || (df.modifiedTime ? new Date(df.modifiedTime).getTime() : 0);
+          const localTime = Number(existingLocal.updatedAt || existingLocal.uploadedAt || 0);
+          if (remoteTime > localTime + 1500) {
+            const modName = props.spModule || existingLocal.module;
+            const wkLabel = normalizeWeekLabelOneLine(props.spWeekLabel !== undefined ? props.spWeekLabel : existingLocal.weekLabel);
+            const fullTask = resolveFullTaskTextByHash(modName, wkLabel, props.spTaskHash, props.spTaskText !== undefined ? props.spTaskText : existingLocal.taskText);
+
+            existingLocal.module = modName;
             existingLocal.category = props.spCategory || existingLocal.category;
-            existingLocal.weekLabel = props.spWeekLabel !== undefined ? props.spWeekLabel : existingLocal.weekLabel;
-            existingLocal.taskText = props.spTaskText !== undefined ? props.spTaskText : existingLocal.taskText;
+            existingLocal.weekLabel = wkLabel;
+            existingLocal.taskText = fullTask;
+            existingLocal.taskHash = props.spTaskHash || (fullTask ? computeTaskHash(modName, wkLabel, fullTask) : '');
             existingLocal.title = props.spTitle || existingLocal.title;
             if (props.spSortOrder) existingLocal.sortOrder = Number(props.spSortOrder) || existingLocal.sortOrder;
             existingLocal.manualOverride = true;
@@ -313,15 +520,21 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
       }
 
       const guess = analyzeFileForSmartSorting(df.name, props.spModule, props.spCategory, props.spWeekLabel, props.spTaskText, true);
+      const targetMod = props.spModule || guess.module;
+      const targetWk = normalizeWeekLabelOneLine(props.spWeekLabel !== undefined ? props.spWeekLabel : guess.weekLabel);
+      const rawTask = props.spTaskText !== undefined ? props.spTaskText : guess.taskText;
+      const fullTask = resolveFullTaskTextByHash(targetMod, targetWk, props.spTaskHash, rawTask);
+
       const newDoc = {
-        id: props.spDocId || `doc_drive_${df.id}`,
+        id: docIdFromProps,
         driveFileId: df.id,
         webViewLink: df.webViewLink || '',
-        module: props.spModule || guess.module,
+        module: targetMod,
         category: props.spCategory || guess.category,
-        weekLabel: props.spWeekLabel !== undefined ? props.spWeekLabel : guess.weekLabel,
-        taskText: props.spTaskText !== undefined ? props.spTaskText : guess.taskText,
-        title: props.spTitle || (guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, df.name) : df.name.replace(/\.[^/.]+$/, '')),
+        weekLabel: targetWk,
+        taskText: fullTask,
+        taskHash: props.spTaskHash || (fullTask ? computeTaskHash(targetMod, targetWk, fullTask) : ''),
+        title: props.spTitle || (fullTask ? formatDocTitleForTask(fullTask, props.spCategory || guess.category, df.name) : df.name.replace(/\.[^/.]+$/, '')),
         fileName: df.name,
         mimeType: df.mimeType || 'application/pdf',
         sizeBytes: Number(df.size) || 0,
@@ -329,17 +542,18 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
         sortOrder: props.spSortOrder ? Number(props.spSortOrder) : (df.createdTime ? new Date(df.createdTime).getTime() : Date.now()),
         manualOverride: props.spManualOverride === 'true',
         uploadedAt: df.createdTime ? new Date(df.createdTime).getTime() : Date.now(),
-        updatedAt: df.modifiedTime ? new Date(df.modifiedTime).getTime() : Date.now()
+        updatedAt: Number(props.spUpdatedAt) || (df.modifiedTime ? new Date(df.modifiedTime).getTime() : Date.now())
       };
       await putDocRecordInDB(newDoc);
       pulledCount++;
     }
 
+    // 4. Aktualisierten Snapshot inkl. aller Dokument-Zuordnungen & Tombstones zurück auf Drive schreiben
     if (!isCurrentActionCancelled()) {
       await saveSyncSnapshotOverwriteOldest(folderId, allDriveFiles);
     }
 
-    if (uploadedNewCount > 0 || pulledCount > 0 || updatedMetaCount > 0) {
+    if (uploadedNewCount > 0 || pulledCount > 0 || updatedMetaCount > 0 || snapshotMerged) {
       await refreshDocsCache();
       if (typeof renderAll === 'function') renderAll();
     }
@@ -355,6 +569,10 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
   } finally {
     isDriveSyncInProgress = false;
     if (!silent) hideLoading();
+    if (pendingDriveResyncRequested) {
+      pendingDriveResyncRequested = false;
+      scheduleAutoDriveSync(800);
+    }
   }
 }
 
@@ -430,9 +648,13 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
     const fallbackMod = document.getElementById('docModuleSelect')?.value || activeModuleFilter || (docsModFilter && docsModFilter !== 'all' ? docsModFilter : '');
     const fallbackCat = document.getElementById('docCategorySelect')?.value || (docsCatFilter && docsCatFilter !== 'all' ? docsCatFilter : '');
     const fallbackWeek = document.getElementById('docWeekSelect')?.value || '';
+    const preTask = window._preselectedUploadTaskText || '';
 
-    const hasExplicitPreselection = !!(fallbackMod || fallbackCat || fallbackWeek);
-    const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek, '', hasExplicitPreselection);
+    const hasExplicitPreselection = !!(fallbackMod || fallbackCat || fallbackWeek || preTask);
+    const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek, preTask, hasExplicitPreselection);
+    const cleanWk = normalizeWeekLabelOneLine(guess.weekLabel || '');
+    const cleanTask = stripModuleBracketsFromText(guess.taskText || '', guess.module);
+    const nextOrd = getNextSortOrderInScope(guess.module, cleanWk, cleanTask);
 
     const newDoc = {
       id: `doc_drive_${driveId}`,
@@ -440,15 +662,17 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
       webViewLink: webViewLink || '',
       module: guess.module,
       category: guess.category,
-      weekLabel: guess.weekLabel || '',
-      taskText: guess.taskText || '',
+      weekLabel: cleanWk,
+      taskText: cleanTask,
+      taskHash: cleanTask ? computeTaskHash(guess.module, cleanWk, cleanTask) : '',
       title: guess.title,
       fileName: fileName,
       mimeType: mimeType || 'application/pdf',
       sizeBytes: sizeBytes || 0,
       hasLocalFile: false,
-      sortOrder: Date.now(),
+      sortOrder: nextOrd,
       manualOverride: true,
+      needsDriveUpdate: true,
       uploadedAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -457,9 +681,11 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
     } catch (e) {}
     await putDocRecordInDB(newDoc);
     await refreshDocsCache();
+    saveState();
     if (typeof renderAll === 'function') renderAll();
     await loadGoogleDriveFilesList();
     showToast(`✅ „${newDoc.title}“ zugeordnet (${newDoc.module})!`);
+    scheduleAutoDriveSync(500);
   } finally {
     hideLoading();
   }
