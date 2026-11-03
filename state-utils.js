@@ -15,7 +15,7 @@ const LEGACY_DOCS_STORE = 'module_docs';
 let appState = null;
 let activeModuleFilter = null;
 let currentTab = 'table';
-let cachedDocsList = []; // Hält NUR schlanke Metadaten im RAM
+let cachedDocsList = [];
 let docsDbPromise = null;
 
 /* =========================================================
@@ -52,22 +52,13 @@ function resolveWeekIdFromLabelOrId(weekIdOrLabel) {
   }
   const wkMatch = oneLine.match(/woche\s*(\d+|zusatz)/i);
   if (wkMatch) {
-    return wkMatch[1].toLowerCase() === 'zusatz' ? 'week_17' : `week_${wkMatch[1]}`;
-  }
-  return oneLine.toLowerCase();
-}
-
-function buildTaskSignature(shortName, weekIdOrLabel, taskText) {
-  const mod = String(shortName || '').trim().toLowerCase();
-  const wkId = resolveWeekIdFromLabelOrId(weekIdOrLabel);
-  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
-  return `${mod}|${wkId}|${normTxt}`;
+    return wkMatch[1].toLowerCase() === 'zusatz' ? 'week_17' : `week_${wkMatch[1]}`; } return oneLine.toLowerCase(); }  function buildTaskSignature(shortName, weekIdOrLabel, taskText) { const mod = String(shortName \vert{}\vert{} '').trim().toLowerCase(); const wkId = resolveWeekIdFromLabelOrId(weekIdOrLabel); const normTxt = normalizeTaskTextForMatch(taskText, shortName); return `${mod}|${wkId}\vert{}${normTxt}`;
 }
 
 function buildModuleTaskSignature(shortName, taskText) {
   const mod = String(shortName || '').trim().toLowerCase();
   const normTxt = normalizeTaskTextForMatch(taskText, shortName);
-  return `${mod}|*|${normTxt}`;
+  return `${mod}\vert{}*\vert{}${normTxt}`;
 }
 
 function computeTaskHash(shortName, weekIdOrLabel, taskText) {
@@ -238,7 +229,6 @@ function restoreSilentBackgroundBackupIfNeeded() {
 
 /* =========================================================
    3. SPEICHERSCHONENDE INDEXED-DB (METADATEN GETRENNT VON BLOBS)
-      INKL. TASK-HASH & DETERMINISTISCHER SORTIERREIHENFOLGE
    ========================================================= */
 function openDocsDB() {
   if (docsDbPromise) return docsDbPromise;
@@ -265,12 +255,26 @@ function openDocsDB() {
   return docsDbPromise;
 }
 
+function inferMimeTypeFromFileName(fileName, fallbackMime = 'application/pdf') {
+  const lower = String(fileName || '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (fallbackMime && fallbackMime !== 'application/octet-stream') return fallbackMime;
+  return 'application/pdf';
+}
+
 function dataUrlToBlobFast(dataUrl, fallbackMime = 'application/pdf') {
   if (!dataUrl || typeof dataUrl !== 'string') return null;
   try {
     const parts = dataUrl.split(',');
     const mimeMatch = parts[0].match(/:(.*?);/);
-    const mime = mimeMatch ? mimeMatch[1] : fallbackMime;
+    const mime = (mimeMatch && mimeMatch[1] && mimeMatch[1] !== 'application/octet-stream')
+      ? mimeMatch[1]
+      : fallbackMime;
     const bstr = atob(parts[1] || '');
     const u8arr = new Uint8Array(bstr.length);
     for (let i = 0; i < bstr.length; i++) {
@@ -282,10 +286,23 @@ function dataUrlToBlobFast(dataUrl, fallbackMime = 'application/pdf') {
   }
 }
 
+async function normalizeToMemoryBlob(fileOrBlob, fileName = '', explicitMime = '') {
+  if (!fileOrBlob) return null;
+  const targetMime = inferMimeTypeFromFileName(fileName || fileOrBlob.name, explicitMime || fileOrBlob.type);
+  try {
+    if (typeof fileOrBlob.arrayBuffer === 'function') {
+      const buf = await fileOrBlob.arrayBuffer();
+      return new Blob([buf], { type: targetMime });
+    }
+  } catch (e) {}
+  return new Blob([fileOrBlob], { type: targetMime });
+}
+
 function stripHeavyFieldsFromMeta(record) {
   const meta = { ...record };
   delete meta.dataUrl;
   delete meta.blob;
+  meta.mimeType = inferMimeTypeFromFileName(meta.fileName || meta.title, meta.mimeType);
   meta.weekLabel = String(meta.weekLabel || '').replace(/\n/g, ' ').trim();
   meta.taskText = stripModuleBracketsFromText(meta.taskText || '', meta.module || '');
   if (meta.taskText) {
@@ -325,7 +342,7 @@ async function migrateLegacyDocsIfNeeded(db) {
     for (const rec of legacyRecords) {
       let blob = rec.blob || null;
       if (!blob && rec.dataUrl) {
-        blob = dataUrlToBlobFast(rec.dataUrl, rec.mimeType);
+        blob = dataUrlToBlobFast(rec.dataUrl, inferMimeTypeFromFileName(rec.fileName, rec.mimeType));
       }
       const meta = stripHeavyFieldsFromMeta(rec);
       meta.hasLocalFile = !!(blob || rec.hasLocalFile);
@@ -361,12 +378,17 @@ async function refreshDocsCache() {
 
 async function putDocRecordInDB(docRecord, explicitBlob = null) {
   const db = await openDocsDB();
-  let blobToSave = explicitBlob || docRecord.blob || null;
-  if (!blobToSave && docRecord.dataUrl) {
-    blobToSave = dataUrlToBlobFast(docRecord.dataUrl, docRecord.mimeType);
+  let rawBlob = explicitBlob || docRecord.blob || null;
+  if (!rawBlob && docRecord.dataUrl) {
+    rawBlob = dataUrlToBlobFast(docRecord.dataUrl, inferMimeTypeFromFileName(docRecord.fileName, docRecord.mimeType));
   }
+  let blobToSave = null;
+  if (rawBlob) {
+    blobToSave = await normalizeToMemoryBlob(rawBlob, docRecord.fileName || docRecord.title, docRecord.mimeType);
+  }
+
   const cleanMeta = stripHeavyFieldsFromMeta(docRecord);
-  if (blobToSave) {
+  if (blobToSave && blobToSave.size > 0) {
     cleanMeta.hasLocalFile = true;
     cleanMeta.sizeBytes = blobToSave.size || cleanMeta.sizeBytes || 0;
   }
@@ -377,10 +399,12 @@ async function putDocRecordInDB(docRecord, explicitBlob = null) {
   }
 
   await new Promise((resolve, reject) => {
-    const stores = blobToSave ? [DOCS_META_STORE, DOCS_BLOB_STORE] : [DOCS_META_STORE];
+    const stores = (blobToSave && blobToSave.size > 0)
+      ? [DOCS_META_STORE, DOCS_BLOB_STORE]
+      : [DOCS_META_STORE];
     const tx = db.transaction(stores, 'readwrite');
     tx.objectStore(DOCS_META_STORE).put(cleanMeta);
-    if (blobToSave) {
+    if (blobToSave && blobToSave.size > 0) {
       tx.objectStore(DOCS_BLOB_STORE).put({ id: cleanMeta.id, blob: blobToSave });
     }
     tx.oncomplete = () => resolve();
@@ -400,13 +424,61 @@ async function putDocRecordInDB(docRecord, explicitBlob = null) {
 async function getDocBlobFromDB(docId) {
   try {
     const db = await openDocsDB();
-    return await new Promise((resolve) => {
+    const docMeta = cachedDocsList.find(d => d.id === docId);
+    const expectedMime = inferMimeTypeFromFileName(docMeta?.fileName || docMeta?.title, docMeta?.mimeType);
+
+    // 1. Primärer Abruf aus DOCS_BLOB_STORE
+    const storedBlob = await new Promise((resolve) => {
+      if (!db.objectStoreNames.contains(DOCS_BLOB_STORE)) return resolve(null);
       const tx = db.transaction(DOCS_BLOB_STORE, 'readonly');
       const req = tx.objectStore(DOCS_BLOB_STORE).get(docId);
-      req.onsuccess = () => resolve(req.result ? req.result.blob : null);
+      req.onsuccess = () => {
+        const res = req.result;
+        if (!res) return resolve(null);
+        if (res.blob instanceof Blob) return resolve(res.blob);
+        if (res instanceof Blob) return resolve(res);
+        if (res.dataUrl) return resolve(dataUrlToBlobFast(res.dataUrl, expectedMime));
+        resolve(null);
+      };
       req.onerror = () => resolve(null);
     });
+
+    if (storedBlob && storedBlob.size > 0) {
+      return storedBlob.type === expectedMime ? storedBlob : new Blob([storedBlob], { type: expectedMime });
+    }
+
+    // 2. Fallback: Prüfe, ob in DOCS_META_STORE oder LEGACY_DOCS_STORE noch ein dataUrl/blob liegt
+    const fallbackBlob = await new Promise((resolve) => {
+      const storeNames = [DOCS_META_STORE];
+      if (db.objectStoreNames.contains(LEGACY_DOCS_STORE)) storeNames.push(LEGACY_DOCS_STORE);
+      const tx = db.transaction(storeNames, 'readonly');
+      const req = tx.objectStore(DOCS_META_STORE).get(docId);
+      req.onsuccess = () => {
+        const r = req.result;
+        if (r && r.blob instanceof Blob && r.blob.size > 0) return resolve(r.blob);
+        if (r && r.dataUrl) return resolve(dataUrlToBlobFast(r.dataUrl, expectedMime));
+        if (db.objectStoreNames.contains(LEGACY_DOCS_STORE)) {
+          const legReq = tx.objectStore(LEGACY_DOCS_STORE).get(docId);
+          legReq.onsuccess = () => {
+            const lr = legReq.result;
+            if (lr && lr.blob instanceof Blob && lr.blob.size > 0) return resolve(lr.blob);
+            if (lr && lr.dataUrl) return resolve(dataUrlToBlobFast(lr.dataUrl, expectedMime));
+            resolve(null);
+          };
+          legReq.onerror = () => resolve(null);
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+
+    if (fallbackBlob && fallbackBlob.size > 0) {
+      return fallbackBlob.type === expectedMime ? fallbackBlob : new Blob([fallbackBlob], { type: expectedMime });
+    }
+    return null;
   } catch (e) {
+    console.warn('Blob-Abruf Hinweis:', e);
     return null;
   }
 }
@@ -455,48 +527,15 @@ function getWeekMondayDateString(weekIdx) {
   const y = parsed.weekMon.getFullYear();
   const m = String(parsed.weekMon.getMonth() + 1).padStart(2, '0');
   const d = String(parsed.weekMon.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function getWeekShortName(weekIdx) {
-  const week = appState?.weeks?.[weekIdx];
-  if (!week) return 'Woche';
-  return week.weekLabel.split('\n')[0].trim();
-}
-
-function formatDateDE(dateObj) {
-  if (!dateObj || isNaN(dateObj.getTime())) return '';
-  const d = String(dateObj.getDate()).padStart(2, '0');
-  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const y = dateObj.getFullYear();
-  return `${d}.${m}.${y}`;
+  return `${y}-${m}-${d}`; }  function getWeekShortName(weekIdx) { const week = appState?.weeks?.[weekIdx]; if (!week) return 'Woche'; return week.weekLabel.split('\n')[0].trim(); }  function formatDateDE(dateObj) { if (!dateObj \vert{}\vert{} isNaN(dateObj.getTime())) return ''; const d = String(dateObj.getDate()).padStart(2, '0'); const m = String(dateObj.getMonth() + 1).padStart(2, '0'); const y = dateObj.getFullYear(); return `${d}.${m}.${y}`;
 }
 
 function formatIsoDateDE(isoStr) {
   if (!isoStr) return '';
   const parts = isoStr.split('-');
   if (parts.length !== 3) return isoStr;
-  return `${parts[2]}.${parts[1]}.${parts[0]}`;
-}
-
-function findWeekIndexByDate(dateObj) {
-  if (!dateObj || isNaN(dateObj.getTime()) || !appState?.weeks) return -1;
-  const t = dateObj.getTime();
-  for (let i = 0; i < appState.weeks.length; i++) {
-    const parsed = parseWeekDates(appState.weeks[i].weekLabel);
-    if (parsed && t >= parsed.weekMon.getTime() && t <= parsed.weekSun.getTime()) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-function formatFileSize(bytes) {
-  const b = Number(bytes) || 0;
-  if (b <= 0) return '';
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  return `${parts[2]}.${parts[1]}.${parts[0]}`; }  function findWeekIndexByDate(dateObj) { if (!dateObj \vert{}\vert{} isNaN(dateObj.getTime()) \vert{}\vert{} !appState?.weeks) return -1; const t = dateObj.getTime(); for (let i = 0; i < appState.weeks.length; i++) { const parsed = parseWeekDates(appState.weeks[i].weekLabel); if (parsed && t >= parsed.weekMon.getTime() && t <= parsed.weekSun.getTime()) { return i; } } return -1; }  function formatFileSize(bytes) { const b = Number(bytes) \vert{}\vert{} 0; if (b <= 0) return ''; if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`; return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function escapeHtml(str) {

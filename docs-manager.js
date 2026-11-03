@@ -1,12 +1,18 @@
 /* =========================================================
-   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, EIGENE NAMENSVERGABE BEIM
-   UPLOAD, ROBUSTE AUFGABEN-KOPPLUNG & SORTIERUNG (docs-manager.js)
+   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, ZUVERLÄSSIGE VORSCHAU BEIM
+   ANKLICKEN, EIGENE NAMENSVERGABE & SORTIERUNG (docs-manager.js)
    ========================================================= */
 let draggedDocId = null;
 let draggedDocFolderGroup = null;
 let pendingUploadQueue = [];
 let activePreviewObjectUrl = null;
 let openTaskFoldersSet = new Set();
+
+// Hilfsvariablen, damit ein versehentlicher 1-2px Maus-Ruckler beim Klicken trotzdem die Vorschau öffnet
+let lastDocDragStartTime = 0;
+let lastDocDragStartCoords = { x: 0, y: 0 };
+let lastDraggedDocIdForClickFallback = null;
+let docDropOccurred = false;
 
 /* =========================================================
    1. DOKUMENT-MENÜS (⋯) SCHLIESSEN & UMSCHALTEN
@@ -129,7 +135,6 @@ function getGeneralModuleDocs(shortName) {
 
 /* =========================================================
    3. ANGEHÄNGTE DATEIEN BEIM BEWEGEN EINER AUFGABE MITNEHMEN
-      (OHNE DEN DOKUMENTENNAMEN ZU VERÄNDERN!)
    ========================================================= */
 async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeekIdx, newMod, newTaskText) {
   const oldWeek = appState?.weeks?.[oldWeekIdx];
@@ -151,7 +156,6 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
     doc.weekLabel = newWeekOneLine;
     doc.taskText = cleanNewTask;
     doc.taskHash = computeTaskHash(newMod, newWeek.id, cleanNewTask);
-    // WICHTIG: doc.title bleibt unverändert!
     doc.sortOrder = orderCounter;
     orderCounter += 10;
     doc.manualOverride = true;
@@ -241,13 +245,20 @@ function handleDocChipDragLeave(event) {
 async function handleDocChipDropOnChip(event, targetDocId) {
   event.preventDefault();
   event.stopPropagation();
+  docDropOccurred = true;
   event.currentTarget.classList.remove('doc-chip-reorder-target');
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
   const sourceDocId = draggedDocId || (rawData.startsWith('DOC:') ? rawData.replace('DOC:', '') : '');
   draggedDocId = null;
 
-  if (!sourceDocId || sourceDocId === targetDocId) return;
+  if (!sourceDocId) return;
+  // Falls auf denselben Chip losgelassen wurde -> als Klick werten und Vorschau öffnen!
+  if (sourceDocId === targetDocId) {
+    previewModuleDoc(targetDocId);
+    return;
+  }
+
   const srcDoc = cachedDocsList.find(d => d.id === sourceDocId);
   const tgtDoc = cachedDocsList.find(d => d.id === targetDocId);
   if (!srcDoc || !tgtDoc) return;
@@ -256,7 +267,6 @@ async function handleDocChipDropOnChip(event, targetDocId) {
   srcDoc.weekLabel = normalizeWeekLabelOneLine(tgtDoc.weekLabel);
   srcDoc.taskText = stripModuleBracketsFromText(tgtDoc.taskText || '', tgtDoc.module);
   srcDoc.taskHash = srcDoc.taskText ? computeTaskHash(srcDoc.module, srcDoc.weekLabel, srcDoc.taskText) : '';
-  // WICHTIG: srcDoc.title bleibt unverändert!
   srcDoc.manualOverride = true;
   srcDoc.needsDriveUpdate = true;
 
@@ -280,7 +290,7 @@ async function handleDocChipDropOnChip(event, targetDocId) {
 }
 
 /* =========================================================
-   5. KOMPAKTE DOKUMENT-CHIPS MIT ⋯-MENÜ & REIHENFOLGE-STEUERUNG
+   5. KOMPAKTE DOKUMENT-CHIPS MIT DIREKTER KLICK-VORSCHAU & ⋯-MENÜ
    ========================================================= */
 function buildSingleDocChipHtml(doc, contextKey = 'chip') {
   const catMeta = getCategoryMeta(doc.category);
@@ -297,8 +307,8 @@ function buildSingleDocChipHtml(doc, contextKey = 'chip') {
          ondrop="handleDocChipDropOnChip(event, '${escapeAttr(doc.id)}')">
       <button type="button"
               class="task-doc-chip"
-              onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}')"
-              title="${escapeAttr(displayTitle)} (${escapeAttr(doc.category || 'Vorlesung')}) – Klicken für Vorschau, ziehen zum Umsortieren">
+              onclick="event.stopPropagation(); event.preventDefault(); previewModuleDoc('${escapeAttr(doc.id)}');"
+              title="${escapeAttr(displayTitle)} (${escapeAttr(doc.category || 'Vorlesung')}) – Klicken für Vorschau">
         <span>${catMeta.icon}</span>
         <span class="task-doc-chip-title">${escapeHtml(displayTitle)}</span>
       </button>
@@ -387,14 +397,17 @@ function renderGeneralModuleDocsCellHtml(shortName) {
 }
 
 /* =========================================================
-   6. DRAG & DROP FÜR DOKUMENTE, GANZE ORDNER & PC-DATEIEN
-      (BEHÄLT IMMER DEN EIGENEN DOKUMENTENNAMEN BEI!)
+   6. DRAG & DROP INKL. KLICK-ERKENNUNG BEI MINI-MAUSBEWEGUNG
    ========================================================= */
 function handleDocDragStart(event, docId) {
   event.stopPropagation();
   draggedTaskInfo = null;
   draggedDocFolderGroup = null;
   draggedDocId = docId;
+  docDropOccurred = false;
+  lastDraggedDocIdForClickFallback = docId;
+  lastDocDragStartTime = Date.now();
+  lastDocDragStartCoords = { x: event.clientX || 0, y: event.clientY || 0 };
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('text/plain', `DOC:${docId}`);
 }
@@ -403,6 +416,8 @@ function handleDocFolderDragStart(event, docIdsJson) {
   event.stopPropagation();
   draggedTaskInfo = null;
   draggedDocId = null;
+  docDropOccurred = false;
+  lastDraggedDocIdForClickFallback = null;
   try {
     draggedDocFolderGroup = JSON.parse(docIdsJson);
   } catch (e) {
@@ -412,16 +427,30 @@ function handleDocFolderDragStart(event, docIdsJson) {
   event.dataTransfer.setData('text/plain', `DOCFOLDER:${docIdsJson}`);
 }
 
-function handleDocDragEnd() {
+function handleDocDragEnd(event) {
+  const elapsed = Date.now() - lastDocDragStartTime;
+  const dx = Math.abs((event?.clientX || 0) - lastDocDragStartCoords.x);
+  const dy = Math.abs((event?.clientY || 0) - lastDocDragStartCoords.y);
+  const fallbackDocId = lastDraggedDocIdForClickFallback;
+
   draggedDocId = null;
   draggedDocFolderGroup = null;
+  lastDraggedDocIdForClickFallback = null;
+
   if (typeof stopDragAutoScroll === 'function') stopDragAutoScroll();
   document.querySelectorAll('.drag-over-cell, .drag-over-item, .doc-drop-target, .doc-chip-reorder-target').forEach(el => {
     el.classList.remove('drag-over-cell', 'drag-over-item', 'doc-drop-target', 'doc-chip-reorder-target');
   });
+
+  // Falls der Nutzer eigentlich nur geklickt hat (kurzer Klick < 260ms & kaum Bewegung < 10px),
+  // der Browser daraus aber wegen draggable="true" ein Drag-Event gemacht hat -> Vorschau öffnen!
+  if (!docDropOccurred && fallbackDocId && elapsed < 260 && dx < 10 && dy < 10) {
+    previewModuleDoc(fallbackDocId);
+  }
 }
 
 async function assignDocIdsToTarget(docIds, targetMod, targetWeekLabel, targetTaskText = '') {
+  docDropOccurred = true;
   if (!Array.isArray(docIds) || docIds.length === 0) return 0;
   const cleanWeek = normalizeWeekLabelOneLine(targetWeekLabel);
   const cleanTask = targetTaskText ? stripModuleBracketsFromText(targetTaskText, targetMod) : '';
@@ -435,7 +464,6 @@ async function assignDocIdsToTarget(docIds, targetMod, targetWeekLabel, targetTa
     doc.weekLabel = cleanWeek;
     doc.taskText = cleanTask;
     doc.taskHash = cleanTask ? computeTaskHash(targetMod, cleanWeek, cleanTask) : '';
-    // WICHTIG: doc.title wird NICHT mehr mit dem Aufgabentext überschrieben!
     doc.sortOrder = nextOrder;
     nextOrder += 10;
     doc.manualOverride = true;
@@ -455,6 +483,7 @@ async function assignDocIdsToTarget(docIds, targetMod, targetWeekLabel, targetTa
 }
 
 async function assignDocToTaskByDragDrop(docIdOrIds, targetWeekIdx, targetMod, targetItemIdx) {
+  docDropOccurred = true;
   const week = appState.weeks[targetWeekIdx];
   const taskItem = week?.cells?.[targetMod]?.[targetItemIdx];
   if (!week || !taskItem) return;
@@ -467,6 +496,7 @@ async function assignDocToTaskByDragDrop(docIdOrIds, targetWeekIdx, targetMod, t
 }
 
 async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetWeekLabel = '', targetTaskText = '') {
+  docDropOccurred = true;
   const files = Array.from(filesList || []);
   if (files.length === 0) return;
   startCancelableOperation(`Speichere ${files.length} gezogene Datei(en) in ${targetMod}...`);
@@ -474,6 +504,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
     const newDocs = [];
     for (const file of files) {
       if (isCurrentActionCancelled()) break;
+      const memBlob = await normalizeToMemoryBlob(file, file.name, file.type);
       const guess = analyzeFileForSmartSorting(file.name, targetMod, '', targetWeekLabel, targetTaskText, true);
       const finalWeek = normalizeWeekLabelOneLine(targetWeekLabel || guess.weekLabel);
       const finalTask = stripModuleBracketsFromText(targetTaskText || guess.taskText || '', targetMod);
@@ -489,8 +520,8 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
         taskHash: finalTask ? computeTaskHash(targetMod, finalWeek, finalTask) : '',
         title: originalBaseName,
         fileName: file.name,
-        mimeType: file.type || 'application/pdf',
-        sizeBytes: file.size || 0,
+        mimeType: inferMimeTypeFromFileName(file.name, file.type),
+        sizeBytes: memBlob ? memBlob.size : (file.size || 0),
         hasLocalFile: true,
         manualOverride: true,
         needsDriveUpdate: true,
@@ -498,7 +529,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
         uploadedAt: Date.now(),
         updatedAt: Date.now()
       };
-      await putDocRecordInDB(docRecord, file);
+      await putDocRecordInDB(docRecord, memBlob);
       newDocs.push(docRecord);
     }
     await refreshDocsCache();
@@ -516,6 +547,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
 
 async function handleGeneralCellDrop(event, targetMod) {
   event.preventDefault();
+  docDropOccurred = true;
   event.currentTarget.classList.remove('drag-over-cell');
 
   if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
@@ -626,7 +658,7 @@ function renderModuleDocsView() {
                  ondragover="handleDocChipDragOver(event)"
                  ondragleave="handleDocChipDragLeave(event)"
                  ondrop="handleDocChipDropOnChip(event, '${escapeAttr(doc.id)}')">
-              <div class="doc-item-info" onclick="previewModuleDoc('${escapeAttr(doc.id)}')" title="Klicken für Vorschau, ziehen zum Umsortieren">
+              <div class="doc-item-info" onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}');" title="Klicken für Vorschau">
                 <div class="doc-item-title">${catMeta.icon} ${escapeHtml(doc.title || doc.fileName)}</div>
                 <div class="doc-item-meta">
                   <span class="doc-cat-badge ${badgeClass}">${escapeHtml(doc.category || 'Vorlesung')}</span>
@@ -700,7 +732,7 @@ function renderModuleDocsView() {
 }
 
 /* =========================================================
-   8. UPLOAD-DIALOG MIT DIREKTER NAMENSVERGABE BEI DER KATEGORIE-AUSWAHL
+   8. UPLOAD-DIALOG MIT SICHEREM SPEICHER-BLOB & NAMENSVERGABE
    ========================================================= */
 function populateUploadDocModalDropdowns(preMod = '', preCat = 'Vorlesung', preWeek = '') {
   const modSel = document.getElementById('docModuleSelect');
@@ -742,8 +774,6 @@ function openUploadDocModal(preMod = '', preCat = 'Vorlesung', preWeek = '', pre
   openModal('uploadDocModal');
 }
 
-/* Wenn oben im Feld "Neuer Dokumentenname" getippt wird, wird der Name direkt
-   auf die Dateien in der Upload-Liste übertragen, ohne den Fokus zu verlieren */
 function onUploadCustomTitlePreselectionChanged(rawVal) {
   const customTitle = String(rawVal || '').trim();
   if (pendingUploadQueue.length === 0) return;
@@ -775,7 +805,6 @@ function onUploadPreselectionChanged() {
     item.category = guess.category;
     item.weekLabel = guess.weekLabel;
     item.taskText = guess.taskText;
-    // WICHTIG: item.title wird NICHT überschrieben, damit der eigene Name / Dateiname bleibt!
     item.reason = guess.reason;
   }
   renderPendingUploadQueue();
@@ -820,7 +849,8 @@ function handleUploadDropZoneDrop(event) {
   }
 }
 
-function handleDocFilesSelected(fileList) {
+/* Liest ausgewählte Dateien sofort als echte Speicher-Blobs ein, bevor das Input-Feld geleert wird! */
+async function handleDocFilesSelected(fileList) {
   const files = Array.from(fileList || []);
   if (files.length === 0) return;
 
@@ -830,7 +860,8 @@ function handleDocFilesSelected(fileList) {
   const topCustomTitle = (document.getElementById('docCustomTitleInput')?.value || '').trim();
   const preTask = window._preselectedUploadTaskText || '';
 
-  files.forEach((file) => {
+  for (const file of files) {
+    const memoryBlob = await normalizeToMemoryBlob(file, file.name, file.type);
     const guess = analyzeFileForSmartSorting(file.name, defaultMod, defaultCat, defaultWk, preTask, true);
     const originalBaseName = file.name.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
     const nextIdx = pendingUploadQueue.length + 1;
@@ -843,10 +874,10 @@ function handleDocFilesSelected(fileList) {
 
     pendingUploadQueue.push({
       tempId: `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      file,
+      file: memoryBlob,
       fileName: file.name,
-      mimeType: file.type || 'application/pdf',
-      sizeBytes: file.size || 0,
+      mimeType: inferMimeTypeFromFileName(file.name, file.type),
+      sizeBytes: memoryBlob ? memoryBlob.size : (file.size || 0),
       module: guess.module,
       category: guess.category,
       weekLabel: guess.weekLabel,
@@ -855,7 +886,7 @@ function handleDocFilesSelected(fileList) {
       customEditedInCard: false,
       reason: guess.reason
     });
-  });
+  }
 
   const fileInput = document.getElementById('docFileInput');
   if (fileInput) fileInput.value = '';
@@ -885,7 +916,6 @@ function updatePendingQueueItem(index, field, value) {
   const entry = pendingUploadQueue[index];
   if (!entry) return;
 
-  // Direktes Tippen im Namensfeld der Karte: Speichern ohne Neu-Rendern (damit der Cursor im Textfeld bleibt!)
   if (field === 'title') {
     entry.title = value;
     entry.customEditedInCard = true;
@@ -1057,7 +1087,7 @@ async function handleSaveUploadedDocs() {
         taskHash: cleanTask ? computeTaskHash(item.module, cleanWeek, cleanTask) : '',
         title: finalTitle,
         fileName: item.fileName,
-        mimeType: item.mimeType || 'application/pdf',
+        mimeType: inferMimeTypeFromFileName(item.fileName, item.mimeType),
         sizeBytes: item.sizeBytes || 0,
         hasLocalFile: true,
         manualOverride: true,
@@ -1196,7 +1226,6 @@ function onEditDocModuleOrWeekChange() {
   taskSel.innerHTML = buildTasksOptionsForModAndWeek(modVal, wkVal, '');
 }
 
-/* WICHTIG: Weder Kategorie- noch Aufgaben-Wechsel überschreiben den eingegebenen Dokumentennamen! */
 function onEditDocCategoryChange() {}
 function onEditDocTaskSelectChange() {}
 
@@ -1248,7 +1277,8 @@ async function deleteDocFromEditModal() {
 }
 
 /* =========================================================
-   10. HANDY- & IPAD-OPTIMIERTE DOKUMENT-VORSCHAU
+   10. REPARIERTE, SOFORT ÖFFNENDE DOKUMENT-VORSCHAU
+       (KOMPATIBEL MIT LOKALEN BLOBS, DATA-URLS & GOOGLE DRIVE)
    ========================================================= */
 function closePreviewModal() {
   closeModal('docPreviewModal');
@@ -1262,62 +1292,129 @@ function closePreviewModal() {
 
 async function previewModuleDoc(docId) {
   closeAllDocActionMenus();
-  const doc = cachedDocsList.find(d => d.id === docId);
-  if (!doc) return;
+  let doc = cachedDocsList.find(d => d.id === docId);
+  if (!doc) {
+    await refreshDocsCache();
+    doc = cachedDocsList.find(d => d.id === docId);
+  }
+  if (!doc) {
+    showToast('⚠️ Dokument konnte nicht gefunden werden.');
+    return;
+  }
 
   const titleEl = document.getElementById('docPreviewTitle');
   const bodyEl = document.getElementById('docPreviewBody');
   const dlBtn = document.getElementById('docPreviewDownloadBtn');
   const newTabBtn = document.getElementById('docPreviewNewTabBtn');
-  const editBtn = document.getElementById('docPreviewEditBtn');
+  let editBtn = document.getElementById('docPreviewEditBtn');
 
-  if (titleEl) titleEl.textContent = `📄 ${doc.title || doc.fileName}`;
+  if (titleEl) {
+    titleEl.textContent = `📄 ${doc.title || doc.fileName} (${doc.module} – ${doc.category || 'Vorlesung'})`;
+  }
+
+  // Überschreibe alte Inline-Flex-Styles auf #docPreviewBody, damit das PDF immer 100% Breite hat!
+  if (bodyEl) {
+    bodyEl.style.display = 'flex';
+    bodyEl.style.flexDirection = 'column';
+    bodyEl.style.alignItems = 'stretch';
+    bodyEl.style.justifyContent = 'flex-start';
+    bodyEl.style.padding = '12px';
+    bodyEl.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:55vh; gap:12px;">
+        <div class="spinner-ring"></div>
+        <span style="font-weight:600; color:var(--text-muted);">Lade Vorschau für „${escapeHtml(doc.title || doc.fileName)}“...</span>
+      </div>
+    `;
+  }
+
+  if (!editBtn && dlBtn && dlBtn.parentElement) {
+    editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.id = 'docPreviewEditBtn';
+    editBtn.className = 'btn btn-outline btn-sm';
+    editBtn.style.marginRight = 'auto';
+    dlBtn.parentElement.insertBefore(editBtn, dlBtn.parentElement.firstChild);
+  }
   if (editBtn) {
+    editBtn.textContent = '✏️ Bearbeiten';
     editBtn.onclick = (ev) => {
       closePreviewModal();
       openEditDocModal(doc.id, ev);
     };
   }
 
+  // Öffne das Modal sofort, damit jeder Klick unmittelbares Feedback gibt
+  openModal('docPreviewModal');
+
   if (activePreviewObjectUrl) {
     URL.revokeObjectURL(activePreviewObjectUrl);
     activePreviewObjectUrl = null;
   }
 
+  // 1. Versuche lokalen Blob aus IndexedDB zu laden
   let blob = await getDocBlobFromDB(doc.id);
-  if (!blob && doc.driveFileId && typeof ensureDriveDocContentLoaded === 'function') {
-    startCancelableOperation('Lade Datei-Vorschau aus Google Drive...');
+
+  // 2. Falls noch nicht lokal vorhanden und mit Google Drive verknüpft -> von Drive nachladen
+  if ((!blob || blob.size === 0) && doc.driveFileId && typeof ensureDriveDocContentLoaded === 'function') {
     try {
       blob = await ensureDriveDocContentLoaded(doc);
-    } finally {
-      hideLoading();
+    } catch (e) {
+      console.warn('Drive-Download für Vorschau nicht möglich, nutze Drive-Embed:', e);
     }
   }
 
-  openModal('docPreviewModal');
-
-  if (!blob) {
-    if (doc.webViewLink) {
+  // 3. Falls kein lokaler Blob vorliegt, aber eine Google-Drive-Datei-ID existiert -> direkt Google-Drive-Preview einbetten!
+  if (!blob || blob.size === 0) {
+    if (doc.driveFileId) {
+      const driveEmbedUrl = `https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/preview`;
+      const driveViewUrl = doc.webViewLink || `https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/view`;
       if (newTabBtn) {
-        newTabBtn.href = doc.webViewLink;
+        newTabBtn.href = driveViewUrl;
         newTabBtn.style.display = 'inline-flex';
       }
-      if (dlBtn) dlBtn.href = doc.webViewLink;
+      if (dlBtn) {
+        dlBtn.href = driveViewUrl;
+        dlBtn.removeAttribute('download');
+        dlBtn.target = '_blank';
+      }
       bodyEl.innerHTML = `
-        <div class="doc-preview-frame-container" style="flex-direction:column; gap:12px; padding:24px; text-align:center;">
-          <p>Diese Datei liegt in deinem Google Drive.</p>
+        <div class="doc-preview-mobile-bar" style="width:100%; margin-bottom:8px;">
+          <span>☁️ <strong>Google Drive Vorschau:</strong></span>
+          <a href="${escapeAttr(driveViewUrl)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 In neuem Tab öffnen</a>
+        </div>
+        <iframe src="${escapeAttr(driveEmbedUrl)}" style="width:100%; height:68vh; border:1px solid var(--primary-border); border-radius:8px; background:#fff;" allow="autoplay"></iframe>
+      `;
+      return;
+    }
+
+    if (doc.webViewLink) {
+      bodyEl.innerHTML = `
+        <div style="text-align:center; padding:40px 20px;">
+          <p style="margin-bottom:14px;">Diese Datei ist über Google Drive verknüpft:</p>
           <a href="${escapeAttr(doc.webViewLink)}" target="_blank" rel="noopener" class="btn btn-primary">☁️ Direkt in Google Drive öffnen</a>
         </div>
       `;
-    } else {
-      bodyEl.innerHTML = `<div class="doc-preview-frame-container"><p style="color:var(--text-muted); padding:24px;">Vorschau für diese Datei aktuell offline nicht verfügbar.</p></div>`;
+      return;
     }
+
+    bodyEl.innerHTML = `
+      <div style="text-align:center; padding:40px 20px; color:var(--text-muted);">
+        <p style="font-size:2.2rem; margin-bottom:10px;">⚠️</p>
+        <p><strong>Der Datei-Inhalt ist auf diesem Gerät noch nicht lokal gespeichert.</strong></p>
+        <p style="font-size:0.82rem; margin-top:6px;">Klicke oben auf <strong>„☁️ Drive Sync“</strong> (oder lade die Datei erneut hoch), um die Vorschau zu laden.</p>
+      </div>
+    `;
     return;
   }
 
-  activePreviewObjectUrl = URL.createObjectURL(blob);
+  // 4. Lokaler Blob vorhanden -> korrekten MIME-Typ erzwingen (wichtig für PDF-Viewer!)
+  const effectiveMime = inferMimeTypeFromFileName(doc.fileName || doc.title, doc.mimeType || blob.type);
+  const typedBlob = (blob.type === effectiveMime) ? blob : new Blob([blob], { type: effectiveMime });
+  activePreviewObjectUrl = URL.createObjectURL(typedBlob);
+
   if (dlBtn) {
     dlBtn.href = activePreviewObjectUrl;
+    dlBtn.target = '_self';
     dlBtn.download = doc.fileName || `${doc.title || 'Dokument'}.pdf`;
   }
   if (newTabBtn) {
@@ -1325,27 +1422,33 @@ async function previewModuleDoc(docId) {
     newTabBtn.style.display = 'inline-flex';
   }
 
-  const mime = (doc.mimeType || blob.type || '').toLowerCase();
-  const isTouchMobile = window.innerWidth <= 900 || ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  const topActionBar = `
+    <div class="doc-preview-mobile-bar" style="width:100%; margin-bottom:8px;">
+      <span>📄 <strong>${escapeHtml(doc.fileName || doc.title)}</strong> (${formatFileSize(typedBlob.size)})</span>
+      <a href="${activePreviewObjectUrl}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 Vollbild / Neuer Tab</a>
+    </div>
+  `;
 
-  if (mime.startsWith('image/')) {
+  if (effectiveMime.startsWith('image/')) {
     bodyEl.innerHTML = `
-      <div class="doc-preview-frame-container">
-        <img src="${activePreviewObjectUrl}" alt="${escapeAttr(doc.title)}" style="max-width:100%; max-height:100%; border-radius:8px; object-fit:contain;">
+      ${topActionBar}
+      <div style="width:100%; flex:1; display:flex; justify-content:center; align-items:center; background:var(--card-bg); border-radius:8px; padding:8px; border:1px solid var(--primary-border);">
+        <img src="${activePreviewObjectUrl}" alt="${escapeAttr(doc.title)}" style="max-width:100%; max-height:66vh; border-radius:6px; object-fit:contain;">
       </div>
     `;
-  } else {
-    const mobileTopBar = isTouchMobile ? `
-      <div class="doc-preview-mobile-bar">
-        <span>📱 <strong>Tipp für Handy &amp; iPad:</strong> Für mehrseitiges Blättern &amp; Zoomen:</span>
-        <a href="${activePreviewObjectUrl}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 Im Vollbild-Reader öffnen</a>
-      </div>
-    ` : '';
-
+  } else if (effectiveMime === 'application/pdf') {
     bodyEl.innerHTML = `
-      ${mobileTopBar}
-      <div class="doc-preview-frame-container">
-        <iframe src="${activePreviewObjectUrl}#view=FitH" style="width:100%; height:100%; min-height:60vh; border:none; border-radius:6px;" title="${escapeAttr(doc.title)}"></iframe>
+      ${topActionBar}
+      <iframe src="${activePreviewObjectUrl}" style="width:100%; height:68vh; min-height:480px; border:1px solid var(--primary-border); border-radius:8px; background:#FFFFFF;" title="${escapeAttr(doc.title)}"></iframe>
+    `;
+  } else {
+    bodyEl.innerHTML = `
+      ${topActionBar}
+      <div style="text-align:center; padding:40px 20px; background:var(--card-bg); border-radius:8px; border:1px solid var(--primary-border);">
+        <p style="font-size:3rem; margin-bottom:10px;">📦</p>
+        <h4>${escapeHtml(doc.title || doc.fileName)}</h4>
+        <p style="color:var(--text-muted); margin-top:6px;">Dateityp: ${escapeHtml(effectiveMime)} (${formatFileSize(typedBlob.size)})</p>
+        <p style="margin-top:12px;">Klicke unten auf <strong>„⬇️ Download“</strong>, um diese Datei zu öffnen.</p>
       </div>
     `;
   }
@@ -1365,6 +1468,7 @@ async function downloadModuleDoc(docId) {
   }
   if (!blob) {
     if (doc.webViewLink) window.open(doc.webViewLink, '_blank');
+    else if (doc.driveFileId) window.open(`https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/view`, '_blank');
     else showToast('⚠️ Datei konnte nicht geladen werden.');
     return;
   }
