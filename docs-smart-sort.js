@@ -1,8 +1,6 @@
 /* =========================================================
    UNTERPROGRAMM 4: INTELLIGENTE DATEINAMEN-ANALYSE &
-   KONTEXTBASIERTE AUFGABEN-ZUORDNUNG (docs-smart-sort.js)
-   - Nutzt vorausgewähltes Modul, Kategorie & Woche aktiv als Suchfokus!
-   - Erkennt auch reine Nummern (z.B. "Blatt 3" -> "ÜB 3") & Fachthemen
+   KONTEXTBASIERTE AUFGABEN-ZUORDNUNG OHNE ZWANGS-UMBENENNUNG (docs-smart-sort.js)
    ========================================================= */
 
 function getCategoryMeta(catValue) {
@@ -30,7 +28,6 @@ function extractTaskTokens(text) {
         .replace(/^(UEB|UB|ÜBUNGSBLATT|BLATT|ÜBUNG|UEBUNG)/, 'ÜB')
         .replace(/([A-ZÄÖÜ]+)0+(\d+)/g, '$1$2');
       tokens.push(full);
-      // Wenn ein Vorlesungsbereich wie V5-V6 vorliegt, auch V5 und V6 einzeln als Token merken
       const rangeMatch = full.match(/^V(\d+)[–\-]V?(\d+)$/);
       if (rangeMatch) {
         tokens.push(`V${rangeMatch[1]}`);
@@ -43,10 +40,10 @@ function extractTaskTokens(text) {
 
 function extractStandaloneNumbers(text) {
   const cleaned = String(text ?? '')
-    .replace(/202\d/g, '') // Jahreszahlen ignorieren
+    .replace(/202\d/g, '')
     .replace(/ws\s*2\d[\/\-]?\d*/gi, '')
     .replace(/wise\s*2\d[\/\-]?\d*/gi, '')
-    .replace(/s\.\s*\d+[–\-]\d+/gi, ''); // Seitenangaben ignorieren
+    .replace(/s\.\s*\d+[–\-]\d+/gi, '');
   const nums = [];
   const rx = /(?:^|[^a-zA-Z0-9])0*(\d{1,2})(?=[^0-9]|$)/g;
   let m;
@@ -87,29 +84,10 @@ function doesTaskMatchCategory(taskText, category) {
   return true;
 }
 
+/* Dokumente übernehmen NICHT mehr den Aufgabennamen, sondern behalten ihren Dateinamen */
 function formatDocTitleForTask(taskText, category, fallbackFileName = '') {
   const baseName = String(fallbackFileName || '').replace(/\.[^/.]+$/, '').trim();
-  const cleanTask = stripModuleBracketsFromText(taskText || '').trim();
-  if (!cleanTask) {
-    if (category === 'Formelsammlung' && !/formel/i.test(baseName)) {
-      return `Formelsammlung – ${baseName || 'Allgemein'}`;
-    }
-    return baseName || category || 'Dokument';
-  }
-  let shortTask = cleanTask;
-  if (shortTask.length > 52) {
-    shortTask = shortTask.slice(0, 50).trim() + '…';
-  }
-  if (category === 'Lösungen') {
-    return /lösung|loesung/i.test(shortTask) ? shortTask : `${shortTask} (Lösung)`;
-  }
-  if (category === 'Formelsammlung') {
-    return `Formelsammlung: ${shortTask}`;
-  }
-  if (category === 'Zusatz') {
-    return `Zusatz: ${shortTask}`;
-  }
-  return shortTask;
+  return baseName || 'Dokument';
 }
 
 function analyzeFileForSmartSorting(
@@ -120,12 +98,10 @@ function analyzeFileForSmartSorting(
   explicitTaskText = '',
   preferPreselection = true
 ) {
-  const rawName = String(fileName || '').replace(/\.[^/.]+$/, '');
+  const rawName = String(fileName || '').replace(/\.[^/.]+$/, '').trim();
   const lower = rawName.toLowerCase();
   const reasonParts = [];
 
-  // 1. Modul bestimmen (Wenn vom Nutzer bereits ein Modul vorausgewählt wurde, hat dieses Vorrang,
-  //    sofern der Dateiname nicht eindeutig ein anderes Modul im Titel trägt)
   let detectedMod = fallbackModule || (appState?.modules?.[0]?.shortName || 'ModSim');
   const explicitModRules = [
     { mod: 'ModSim',     rx: /\b(modsim|modellierung|simulation|fem\b|numpy|2-0\d|2-10|rwp|awp|quadratur)\b/i },
@@ -154,7 +130,6 @@ function analyzeFileForSmartSorting(
     reasonParts.push(`Modul: ${detectedMod}`);
   }
 
-  // 2. Kategorie bestimmen (Berücksichtigt Vorauswahl + eindeutige Schlüsselwörter im Dateinamen)
   let detectedCat = fallbackCategory || 'Vorlesung';
   let filenameMatchedCat = null;
 
@@ -176,8 +151,6 @@ function analyzeFileForSmartSorting(
     filenameMatchedCat = 'Vorlesung';
   }
 
-  // Wenn im Dateinamen explizit "Lösung" steht, immer als "Lösungen" kategorisieren;
-  // ansonsten hat die vom Nutzer eingestellte Kategorie-Vorauswahl Vorrang!
   if (filenameMatchedCat === 'Lösungen' || filenameMatchedCat === 'Formelsammlung') {
     detectedCat = filenameMatchedCat;
     reasonParts.push(`Kategorie erkannt: ${detectedCat}`);
@@ -189,7 +162,6 @@ function analyzeFileForSmartSorting(
     reasonParts.push(`Kategorie erkannt: ${detectedCat}`);
   }
 
-  // 3. Intelligente Wochen- & Aufgaben-Erkennung anhand von Modul + Kategorie + Nummer/Stichwort
   let detectedWeekLabel = fallbackWeekLabel ? fallbackWeekLabel.replace(/\n/g, ' ') : '';
   let detectedTaskText = explicitTaskText || '';
 
@@ -198,8 +170,6 @@ function analyzeFileForSmartSorting(
   const fileNumbers = extractStandaloneNumbers(rawName);
   const fileKeywords = extractTopicKeywords(rawName);
 
-  // Wenn eine Kategorie wie "Übung" oder "Lösungen" vorausgewählt ist und die Datei nur eine Nummer hat (z.B. "Blatt 3.pdf" oder "03_Loesung.pdf"),
-  // erzeuge synthetische Such-Tokens passend zur Vorauswahl!
   const syntheticTokens = [...fileTokens];
   if (fileNumbers.length > 0) {
     for (const num of fileNumbers) {
@@ -221,7 +191,6 @@ function analyzeFileForSmartSorting(
     let bestCandidate = null;
     let bestScore = 0;
 
-    // Falls der Nutzer schon eine bestimmte Woche vorausgewählt hat, durchsuche bevorzugt diese Woche, sonst alle Wochen
     const weeksToScan = detectedWeekLabel
       ? appState.weeks.filter(w => w.weekLabel.replace(/\n/g, ' ') === detectedWeekLabel)
       : appState.weeks;
@@ -235,14 +204,12 @@ function analyzeFileForSmartSorting(
         let score = 0;
         let matchNote = '';
 
-        // A) Exakter Token-Treffer (z.B. ÜB3, LE4, V5, HSÜ2, 2-03, Testat1)
         const exactTokenHit = fileTokens.find(ft => itemTokens.includes(ft));
         if (exactTokenHit) {
           score += 100;
           matchNote = `Kürzel ${exactTokenHit}`;
         }
 
-        // B) Synthetischer Token-Treffer über vorausgewählte Kategorie + Nummer (z.B. "Kategorie: Übung" + Datei "3.pdf" -> "ÜB 3")
         if (!exactTokenHit) {
           const synthHit = syntheticTokens.find(st => itemTokens.includes(st));
           if (synthHit && doesTaskMatchCategory(cleanTxt, detectedCat)) {
@@ -251,7 +218,6 @@ function analyzeFileForSmartSorting(
           }
         }
 
-        // C) Fachwort-/Themen-Treffer (z.B. "Kirchhoff", "Kondensator", "FEM", "Gauß", "Taylor", "Passungen")
         const keywordHits = fileKeywords.filter(fk =>
           itemKeywords.some(ik => ik.includes(fk) || fk.includes(ik))
         );
@@ -260,12 +226,10 @@ function analyzeFileForSmartSorting(
           if (!matchNote) matchNote = `Thema „${keywordHits[0]}“`;
         }
 
-        // D) Bonus, wenn der Aufgabentyp genau zur gewählten Kategorie passt
         if (score > 0 && doesTaskMatchCategory(cleanTxt, detectedCat)) {
           score += 20;
         }
 
-        // E) Wenn die Woche vom Nutzer fest vorausgewählt wurde und in dieser Woche genau 1 Aufgabe zur Kategorie passt
         if (score === 0 && detectedWeekLabel && doesTaskMatchCategory(cleanTxt, detectedCat)) {
           score = 25;
           matchNote = `Passend zu ${detectedCat} in gewählter Woche`;
@@ -290,7 +254,6 @@ function analyzeFileForSmartSorting(
     }
   }
 
-  // Fallback: Direkte Wochennummer im Dateinamen (z.B. "Woche 4" oder "KW 4")
   if (!detectedWeekLabel && !isGeneralByDefault && appState?.weeks) {
     const wkMatch = rawName.match(/(?:woche|week|kw)\s*0*(\d{1,2})/i);
     if (wkMatch) {
@@ -315,16 +278,12 @@ function analyzeFileForSmartSorting(
     reasonParts.push('Allgemeine Modul-Unterlage');
   }
 
-  const title = detectedTaskText
-    ? formatDocTitleForTask(detectedTaskText, detectedCat, fileName)
-    : formatDocTitleForTask('', detectedCat, fileName);
-
   return {
     module: detectedMod,
     category: detectedCat,
     weekLabel: detectedWeekLabel,
     taskText: detectedTaskText,
-    title,
+    title: rawName || 'Dokument',
     reason: reasonParts.length > 0 ? reasonParts.join(' • ') : 'Standard-Vorauswahl'
   };
 }

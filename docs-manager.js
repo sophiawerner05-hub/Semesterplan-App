@@ -1,6 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, ROBUSTE AUFGABEN-KOPPLUNG
-   ÜBER TASK-HASH, DETERMINISTISCHE SORTIERUNG & AUTO-SYNC (docs-manager.js)
+   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, EIGENE NAMENSVERGABE BEIM
+   UPLOAD, ROBUSTE AUFGABEN-KOPPLUNG & SORTIERUNG (docs-manager.js)
    ========================================================= */
 let draggedDocId = null;
 let draggedDocFolderGroup = null;
@@ -11,37 +11,36 @@ let openTaskFoldersSet = new Set();
 /* =========================================================
    1. DOKUMENT-MENÜS (⋯) SCHLIESSEN & UMSCHALTEN
    ========================================================= */
-   function closeAllDocActionMenus() {
-     document.querySelectorAll('.doc-dropdown-menu.open').forEach(el => el.classList.remove('open'));
-     document.querySelectorAll('.doc-menu-btn.active, .chip-dots-btn.active').forEach(el => el.classList.remove('active'));
-     document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
-       el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
-     });
-   }
+function closeAllDocActionMenus() {
+  document.querySelectorAll('.doc-dropdown-menu.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.doc-menu-btn.active, .chip-dots-btn.active').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
+    el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
+  });
+}
 
-   function toggleDocActionMenu(event, menuId) {
-     event.stopPropagation();
-     event.preventDefault();
-     const menu = document.getElementById(menuId);
-     if (!menu) return;
-     const wasOpen = menu.classList.contains('open');
-     if (typeof closeAllTaskActionMenus === 'function') closeAllTaskActionMenus();
-     closeAllDocActionMenus();
-     if (!wasOpen) {
-       menu.classList.add('open');
-       event.currentTarget.classList.add('active');
-       menu.closest('.task-doc-chip-group')?.classList.add('menu-open-parent');
-       menu.closest('.task-item')?.classList.add('menu-open-parent');
-       menu.closest('.doc-compact-item')?.classList.add('menu-open-parent');
-       menu.closest('.doc-folder-card')?.classList.add('menu-open-parent');
-       menu.closest('td')?.classList.add('menu-open-cell');
-       menu.closest('tr')?.classList.add('menu-open-row');
-     }
-   }
+function toggleDocActionMenu(event, menuId) {
+  event.stopPropagation();
+  event.preventDefault();
+  const menu = document.getElementById(menuId);
+  if (!menu) return;
+  const wasOpen = menu.classList.contains('open');
+  if (typeof closeAllTaskActionMenus === 'function') closeAllTaskActionMenus();
+  closeAllDocActionMenus();
+  if (!wasOpen) {
+    menu.classList.add('open');
+    event.currentTarget.classList.add('active');
+    menu.closest('.task-doc-chip-group')?.classList.add('menu-open-parent');
+    menu.closest('.task-item')?.classList.add('menu-open-parent');
+    menu.closest('.doc-compact-item')?.classList.add('menu-open-parent');
+    menu.closest('.doc-folder-card')?.classList.add('menu-open-parent');
+    menu.closest('td')?.classList.add('menu-open-cell');
+    menu.closest('tr')?.classList.add('menu-open-row');
+  }
+}
 
 /* =========================================================
    2. FEHLERTOLERANTE AUFGABEN- & WOCHEN-ZUORDNUNG
-      (Auch nach Neustart oder auf Zweitgeräten immer 100 % stabil!)
    ========================================================= */
 function normalizeWeekLabelOneLine(lbl) {
   return String(lbl || '').replace(/\n/g, ' ').trim();
@@ -73,7 +72,6 @@ function getNextSortOrderInScope(moduleName, weekLabelOneLine, taskText = '') {
 function getDocsForTask(weekIdx, shortName, taskText) {
   const week = appState?.weeks?.[weekIdx];
   if (!week) return [];
-  const wkOneLine = normalizeWeekLabelOneLine(week.weekLabel);
   const cleanTaskNorm = normalizeTaskTextForMatch(taskText, shortName);
   if (!cleanTaskNorm) return [];
 
@@ -83,7 +81,6 @@ function getDocsForTask(weekIdx, shortName, taskText) {
   const matched = cachedDocsList.filter(doc => {
     if (doc.module !== shortName) return false;
 
-    // 1. Primärer Vergleich über den eindeutigen Task-Hash (immun gegen Drive-Textkürzungen!)
     if (doc.taskHash && doc.taskHash === expectedHash) {
       return true;
     }
@@ -91,7 +88,6 @@ function getDocsForTask(weekIdx, shortName, taskText) {
     const docTaskNorm = normalizeTaskTextForMatch(doc.taskText || '', shortName);
     const sameWeek = !doc.weekLabel || isSameWeekLabelOrId(doc.weekLabel, week);
 
-    // 2. Exakter oder (durch frühere Drive-Limits) gekürzter Text-Abgleich
     if (docTaskNorm && sameWeek) {
       if (docTaskNorm === cleanTaskNorm) return true;
       if (docTaskNorm.length >= 24 && cleanTaskNorm.startsWith(docTaskNorm)) return true;
@@ -102,7 +98,6 @@ function getDocsForTask(weekIdx, shortName, taskText) {
       return false;
     }
 
-    // 3. Automatischer Token-Abgleich, falls das Dokument in derselben Woche ohne speziellen Aufgabentext liegt
     if (isSameWeekLabelOrId(doc.weekLabel, week) && !docTaskNorm && taskTokens.length > 0) {
       const docTokens = extractTaskTokens((doc.fileName || '') + ' ' + (doc.title || ''));
       if (taskTokens.some(t => docTokens.includes(t))) return true;
@@ -133,8 +128,8 @@ function getGeneralModuleDocs(shortName) {
 }
 
 /* =========================================================
-   3. ANGEHÄNGTE DATEIEN BEIM BEWEGEN ODER UMBENENNEN EINER
-      AUFGABE AUTOMATISCH MITNEHMEN!
+   3. ANGEHÄNGTE DATEIEN BEIM BEWEGEN EINER AUFGABE MITNEHMEN
+      (OHNE DEN DOKUMENTENNAMEN ZU VERÄNDERN!)
    ========================================================= */
 async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeekIdx, newMod, newTaskText) {
   const oldWeek = appState?.weeks?.[oldWeekIdx];
@@ -156,7 +151,7 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
     doc.weekLabel = newWeekOneLine;
     doc.taskText = cleanNewTask;
     doc.taskHash = computeTaskHash(newMod, newWeek.id, cleanNewTask);
-    doc.title = formatDocTitleForTask(cleanNewTask, doc.category, doc.fileName);
+    // WICHTIG: doc.title bleibt unverändert!
     doc.sortOrder = orderCounter;
     orderCounter += 10;
     doc.manualOverride = true;
@@ -175,7 +170,7 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
 }
 
 /* =========================================================
-   4. REIHENFOLGE VON DOKUMENTEN (OHNE ODER MIT AUFGABE) ÄNDERN
+   4. REIHENFOLGE VON DOKUMENTEN ÄNDERN
    ========================================================= */
 function getPeerDocsInSameScope(doc) {
   if (!doc) return [];
@@ -261,9 +256,7 @@ async function handleDocChipDropOnChip(event, targetDocId) {
   srcDoc.weekLabel = normalizeWeekLabelOneLine(tgtDoc.weekLabel);
   srcDoc.taskText = stripModuleBracketsFromText(tgtDoc.taskText || '', tgtDoc.module);
   srcDoc.taskHash = srcDoc.taskText ? computeTaskHash(srcDoc.module, srcDoc.weekLabel, srcDoc.taskText) : '';
-  if (srcDoc.taskText) {
-    srcDoc.title = formatDocTitleForTask(srcDoc.taskText, srcDoc.category, srcDoc.fileName);
-  }
+  // WICHTIG: srcDoc.title bleibt unverändert!
   srcDoc.manualOverride = true;
   srcDoc.needsDriveUpdate = true;
 
@@ -313,13 +306,13 @@ function buildSingleDocChipHtml(doc, contextKey = 'chip') {
         <button type="button"
                 class="chip-dots-btn"
                 onclick="toggleDocActionMenu(event, '${escapeAttr(menuId)}')"
-                title="Datei-Optionen (Vorschau, Reihenfolge, Kategorie, Download, Löschen)">⋯</button>
+                title="Datei-Optionen (Vorschau, Reihenfolge, Name &amp; Kategorie, Download, Löschen)">⋯</button>
         <div class="doc-dropdown-menu" id="${escapeAttr(menuId)}" onclick="event.stopPropagation()">
           <button type="button" class="task-menu-item" onclick="closeAllDocActionMenus(); previewModuleDoc('${escapeAttr(doc.id)}')">
             <span>👁️</span> <span>Vorschau öffnen</span>
           </button>
           <button type="button" class="task-menu-item" onclick="closeAllDocActionMenus(); openEditDocModal('${escapeAttr(doc.id)}', event)">
-            <span>✏️</span> <span>Kategorie &amp; Zuordnung ändern</span>
+            <span>✏️</span> <span>Name, Kategorie &amp; Zuordnung</span>
           </button>
           <button type="button" class="task-menu-item" onclick="moveDocOrder('${escapeAttr(doc.id)}', -1, event)">
             <span>⬅️</span> <span>Weiter nach vorne / oben</span>
@@ -395,7 +388,7 @@ function renderGeneralModuleDocsCellHtml(shortName) {
 
 /* =========================================================
    6. DRAG & DROP FÜR DOKUMENTE, GANZE ORDNER & PC-DATEIEN
-      (MIT DETERMINISTISCHER SORTIERUNG & SOFORTIGEM AUTO-SYNC)
+      (BEHÄLT IMMER DEN EIGENEN DOKUMENTENNAMEN BEI!)
    ========================================================= */
 function handleDocDragStart(event, docId) {
   event.stopPropagation();
@@ -442,9 +435,7 @@ async function assignDocIdsToTarget(docIds, targetMod, targetWeekLabel, targetTa
     doc.weekLabel = cleanWeek;
     doc.taskText = cleanTask;
     doc.taskHash = cleanTask ? computeTaskHash(targetMod, cleanWeek, cleanTask) : '';
-    if (cleanTask) {
-      doc.title = formatDocTitleForTask(cleanTask, doc.category, doc.fileName);
-    }
+    // WICHTIG: doc.title wird NICHT mehr mit dem Aufgabentext überschrieben!
     doc.sortOrder = nextOrder;
     nextOrder += 10;
     doc.manualOverride = true;
@@ -471,7 +462,7 @@ async function assignDocToTaskByDragDrop(docIdOrIds, targetWeekIdx, targetMod, t
   const cleanTaskText = stripModuleBracketsFromText(taskItem.text, targetMod);
   const movedCount = await assignDocIdsToTarget(ids, targetMod, week.weekLabel, cleanTaskText);
   if (movedCount) {
-    showToast(`📎 ${movedCount > 1 ? movedCount + ' Dateien' : 'Dokument'} fest der Aufgabe „${cleanTaskText}“ zugeordnet!`);
+    showToast(`📎 ${movedCount > 1 ? movedCount + ' Dateien' : 'Dokument'} der Aufgabe „${cleanTaskText}“ zugeordnet!`);
   }
 }
 
@@ -487,6 +478,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
       const finalWeek = normalizeWeekLabelOneLine(targetWeekLabel || guess.weekLabel);
       const finalTask = stripModuleBracketsFromText(targetTaskText || guess.taskText || '', targetMod);
       const nextOrd = getNextSortOrderInScope(targetMod, finalWeek, finalTask);
+      const originalBaseName = file.name.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
 
       const docRecord = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -495,9 +487,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
         weekLabel: finalWeek,
         taskText: finalTask,
         taskHash: finalTask ? computeTaskHash(targetMod, finalWeek, finalTask) : '',
-        title: finalTask
-          ? formatDocTitleForTask(finalTask, guess.category, file.name)
-          : file.name.replace(/\.[^/.]+$/, ''),
+        title: originalBaseName,
         fileName: file.name,
         mimeType: file.type || 'application/pdf',
         sizeBytes: file.size || 0,
@@ -554,7 +544,6 @@ async function recalculateTaskDocTitles(moduleName, weekLabel, taskText) {
   const wkNorm = normalizeWeekLabelOneLine(weekLabel);
   for (const doc of cachedDocsList) {
     if (doc.module === moduleName && normalizeWeekLabelOneLine(doc.weekLabel) === wkNorm && doc.taskText === taskText) {
-      doc.title = formatDocTitleForTask(taskText, doc.category, doc.fileName);
       doc.taskHash = computeTaskHash(moduleName, wkNorm, taskText);
       await putDocRecordInDB(doc);
     }
@@ -653,7 +642,7 @@ function renderModuleDocsView() {
                       <span>👁️</span> <span>Vorschau öffnen</span>
                     </button>
                     <button type="button" class="task-menu-item" onclick="closeAllDocActionMenus(); openEditDocModal('${escapeAttr(doc.id)}', event)">
-                      <span>✏️</span> <span>Kategorie &amp; Zuordnung ändern</span>
+                      <span>✏️</span> <span>Name, Kategorie &amp; Zuordnung</span>
                     </button>
                     <button type="button" class="task-menu-item" onclick="moveDocOrder('${escapeAttr(doc.id)}', -1, event)">
                       <span>↑</span> <span>Nach oben verschieben</span>
@@ -711,13 +700,17 @@ function renderModuleDocsView() {
 }
 
 /* =========================================================
-   8. UPLOAD-DIALOG MIT SICHERER SPEICHERUNG DER AUFGABEN-ZUORDNUNG
+   8. UPLOAD-DIALOG MIT DIREKTER NAMENSVERGABE BEI DER KATEGORIE-AUSWAHL
    ========================================================= */
 function populateUploadDocModalDropdowns(preMod = '', preCat = 'Vorlesung', preWeek = '') {
   const modSel = document.getElementById('docModuleSelect');
   const catSel = document.getElementById('docCategorySelect');
   const wkSel = document.getElementById('docWeekSelect');
+  const customTitleInp = document.getElementById('docCustomTitleInput');
 
+  if (customTitleInp) {
+    customTitleInp.value = '';
+  }
   if (modSel && appState?.modules) {
     modSel.innerHTML = appState.modules.map(m =>
       `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`
@@ -749,6 +742,26 @@ function openUploadDocModal(preMod = '', preCat = 'Vorlesung', preWeek = '', pre
   openModal('uploadDocModal');
 }
 
+/* Wenn oben im Feld "Neuer Dokumentenname" getippt wird, wird der Name direkt
+   auf die Dateien in der Upload-Liste übertragen, ohne den Fokus zu verlieren */
+function onUploadCustomTitlePreselectionChanged(rawVal) {
+  const customTitle = String(rawVal || '').trim();
+  if (pendingUploadQueue.length === 0) return;
+
+  pendingUploadQueue.forEach((item, idx) => {
+    const fallbackOriginal = item.fileName.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
+    if (customTitle) {
+      item.title = pendingUploadQueue.length > 1 ? `${customTitle} (${idx + 1})` : customTitle;
+    } else if (!item.customEditedInCard) {
+      item.title = fallbackOriginal;
+    }
+    const cardInput = document.getElementById(`queueTitleInput_${idx}`);
+    if (cardInput) {
+      cardInput.value = item.title;
+    }
+  });
+}
+
 function onUploadPreselectionChanged() {
   if (pendingUploadQueue.length === 0) return;
   const defaultMod = document.getElementById('docModuleSelect')?.value || 'ModSim';
@@ -762,7 +775,7 @@ function onUploadPreselectionChanged() {
     item.category = guess.category;
     item.weekLabel = guess.weekLabel;
     item.taskText = guess.taskText;
-    item.title = guess.title;
+    // WICHTIG: item.title wird NICHT überschrieben, damit der eigene Name / Dateiname bleibt!
     item.reason = guess.reason;
   }
   renderPendingUploadQueue();
@@ -814,10 +827,20 @@ function handleDocFilesSelected(fileList) {
   const defaultMod = document.getElementById('docModuleSelect')?.value || 'ModSim';
   const defaultCat = document.getElementById('docCategorySelect')?.value || 'Vorlesung';
   const defaultWk = document.getElementById('docWeekSelect')?.value || '';
+  const topCustomTitle = (document.getElementById('docCustomTitleInput')?.value || '').trim();
   const preTask = window._preselectedUploadTaskText || '';
 
-  for (const file of files) {
+  files.forEach((file) => {
     const guess = analyzeFileForSmartSorting(file.name, defaultMod, defaultCat, defaultWk, preTask, true);
+    const originalBaseName = file.name.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
+    const nextIdx = pendingUploadQueue.length + 1;
+    let initialTitle = originalBaseName;
+    if (topCustomTitle) {
+      initialTitle = (files.length > 1 || pendingUploadQueue.length > 0)
+        ? `${topCustomTitle} (${nextIdx})`
+        : topCustomTitle;
+    }
+
     pendingUploadQueue.push({
       tempId: `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       file,
@@ -828,10 +851,12 @@ function handleDocFilesSelected(fileList) {
       category: guess.category,
       weekLabel: guess.weekLabel,
       taskText: guess.taskText,
-      title: guess.title,
+      title: initialTitle,
+      customEditedInCard: false,
       reason: guess.reason
     });
-  }
+  });
+
   const fileInput = document.getElementById('docFileInput');
   if (fileInput) fileInput.value = '';
   renderPendingUploadQueue();
@@ -859,13 +884,20 @@ function buildTasksOptionsForModAndWeek(modName, weekLabelOneLine, selectedTask 
 function updatePendingQueueItem(index, field, value) {
   const entry = pendingUploadQueue[index];
   if (!entry) return;
+
+  // Direktes Tippen im Namensfeld der Karte: Speichern ohne Neu-Rendern (damit der Cursor im Textfeld bleibt!)
+  if (field === 'title') {
+    entry.title = value;
+    entry.customEditedInCard = true;
+    return;
+  }
+
   entry[field] = value;
 
   if (field === 'module') {
     const reGuess = analyzeFileForSmartSorting(entry.fileName, entry.module, entry.category, '', '', true);
     entry.weekLabel = reGuess.weekLabel;
     entry.taskText = reGuess.taskText;
-    entry.title = reGuess.title;
     entry.reason = reGuess.reason;
     renderPendingUploadQueue();
     return;
@@ -883,15 +915,11 @@ function updatePendingQueueItem(index, field, value) {
     } else {
       entry.taskText = '';
     }
-    entry.title = entry.taskText
-      ? formatDocTitleForTask(entry.taskText, entry.category, entry.fileName)
-      : formatDocTitleForTask('', entry.category, entry.fileName);
     renderPendingUploadQueue();
     return;
   }
 
   if (field === 'category' || field === 'taskText') {
-    // Falls eine Aufgabe ausgewählt wurde, aber weekLabel noch leer war, finde automatisch die passende Woche zur Aufgabe
     if (field === 'taskText' && entry.taskText && !entry.weekLabel && appState?.weeks) {
       const foundWk = appState.weeks.find(w =>
         (w.cells[entry.module] || []).some(t =>
@@ -902,9 +930,6 @@ function updatePendingQueueItem(index, field, value) {
         entry.weekLabel = normalizeWeekLabelOneLine(foundWk.weekLabel);
       }
     }
-    entry.title = entry.taskText
-      ? formatDocTitleForTask(entry.taskText, entry.category, entry.fileName)
-      : formatDocTitleForTask('', entry.category, entry.fileName);
     renderPendingUploadQueue();
   }
 }
@@ -959,7 +984,7 @@ function renderPendingUploadQueue() {
     return `
       <div class="smart-sort-card">
         <div class="smart-sort-card-header">
-          <strong>📄 ${escapeHtml(item.fileName)} (${formatFileSize(item.sizeBytes)})</strong>
+          <strong>📄 Originaldatei: ${escapeHtml(item.fileName)} (${formatFileSize(item.sizeBytes)})</strong>
           <div style="display:flex; gap:6px; align-items:center;">
             <span class="smart-sort-reason">✨ ${escapeHtml(item.reason)}</span>
             <button type="button" class="btn btn-danger-outline btn-sm" onclick="removePendingQueueItem(${idx})">✖</button>
@@ -967,12 +992,21 @@ function renderPendingUploadQueue() {
         </div>
         <div class="smart-sort-grid">
           <div class="form-group">
-            <label>Modul</label>
-            <select class="select-box full-width" onchange="updatePendingQueueItem(${idx}, 'module', this.value)">${modOpts}</select>
+            <label>Neuer Name (Anzeigename)</label>
+            <input type="text"
+                   id="queueTitleInput_${idx}"
+                   class="full-width"
+                   value="${escapeAttr(item.title)}"
+                   placeholder="Eigenen Namen eingeben..."
+                   oninput="updatePendingQueueItem(${idx}, 'title', this.value)">
           </div>
           <div class="form-group">
             <label>Kategorie</label>
             <select class="select-box full-width" onchange="updatePendingQueueItem(${idx}, 'category', this.value)">${catOpts}</select>
+          </div>
+          <div class="form-group">
+            <label>Modul</label>
+            <select class="select-box full-width" onchange="updatePendingQueueItem(${idx}, 'module', this.value)">${modOpts}</select>
           </div>
           <div class="form-group">
             <label>Semesterwoche</label>
@@ -996,11 +1030,23 @@ async function handleSaveUploadedDocs() {
   startCancelableOperation(`Speichere ${pendingUploadQueue.length} Dokument(e)...`);
   try {
     const savedDocs = [];
-    for (const item of pendingUploadQueue) {
+    const topCustomTitle = (document.getElementById('docCustomTitleInput')?.value || '').trim();
+
+    for (let i = 0; i < pendingUploadQueue.length; i++) {
       if (isCurrentActionCancelled()) break;
+      const item = pendingUploadQueue[i];
       const cleanWeek = normalizeWeekLabelOneLine(item.weekLabel);
       const cleanTask = stripModuleBracketsFromText(item.taskText || '', item.module);
       const nextOrd = getNextSortOrderInScope(item.module, cleanWeek, cleanTask);
+      const fallbackBaseName = item.fileName.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
+
+      let finalTitle = (item.title || '').trim();
+      if (!finalTitle && topCustomTitle) {
+        finalTitle = pendingUploadQueue.length > 1 ? `${topCustomTitle} (${i + 1})` : topCustomTitle;
+      }
+      if (!finalTitle) {
+        finalTitle = fallbackBaseName;
+      }
 
       const newDoc = {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -1009,7 +1055,7 @@ async function handleSaveUploadedDocs() {
         weekLabel: cleanWeek,
         taskText: cleanTask,
         taskHash: cleanTask ? computeTaskHash(item.module, cleanWeek, cleanTask) : '',
-        title: item.title || item.fileName.replace(/\.[^/.]+$/, ''),
+        title: finalTitle,
         fileName: item.fileName,
         mimeType: item.mimeType || 'application/pdf',
         sizeBytes: item.sizeBytes || 0,
@@ -1026,6 +1072,9 @@ async function handleSaveUploadedDocs() {
 
     pendingUploadQueue = [];
     window._preselectedUploadTaskText = '';
+    const customTitleInp = document.getElementById('docCustomTitleInput');
+    if (customTitleInp) customTitleInp.value = '';
+
     closeModal('uploadDocModal');
     await refreshDocsCache();
     saveState();
@@ -1034,7 +1083,7 @@ async function handleSaveUploadedDocs() {
     if (typeof isGoogleConnected === 'function' && isGoogleConnected() && typeof syncDocumentsWithGoogleDrive === 'function') {
       await syncDocumentsWithGoogleDrive(false);
     } else {
-      showToast(`✅ ${savedDocs.length} Dokument(e) fest zugeordnet & lokal gesichert!`);
+      showToast(`✅ ${savedDocs.length} Dokument(e) mit deinem Namen gespeichert!`);
     }
   } finally {
     hideLoading();
@@ -1042,7 +1091,7 @@ async function handleSaveUploadedDocs() {
 }
 
 /* =========================================================
-   9. BEARBEITEN VON KATEGORIE, MODUL, WOCHE & AUFGABE (editDocModal)
+   9. BEARBEITEN VON NAME, KATEGORIE, MODUL, WOCHE & AUFGABE (editDocModal)
    ========================================================= */
 function ensureEditDocModalExists() {
   if (document.getElementById('editDocModal')) return;
@@ -1050,14 +1099,14 @@ function ensureEditDocModalExists() {
     <div class="modal-backdrop" id="editDocModal">
       <div class="modal">
         <div class="modal-header">
-          <h3>✏️ Dokument-Kategorie &amp; Zuordnung bearbeiten</h3>
+          <h3>✏️ Dokument-Name, Kategorie &amp; Zuordnung bearbeiten</h3>
           <button type="button" class="modal-close" onclick="closeModal('editDocModal')">&times;</button>
         </div>
         <div class="modal-body">
           <input type="hidden" id="editDocIdInput" value="">
           <div class="form-group" style="margin-bottom:12px;">
             <label for="editDocTitleInput">Anzeigename des Dokuments</label>
-            <input type="text" id="editDocTitleInput" class="full-width" placeholder="Titel des Dokuments">
+            <input type="text" id="editDocTitleInput" class="full-width" placeholder="Eigenen Namen für das Dokument eingeben">
             <small class="field-note" id="editDocOriginalFileNote"></small>
           </div>
           <div class="form-grid">
@@ -1106,7 +1155,7 @@ function openEditDocModal(docId, event) {
   ensureEditDocModalExists();
 
   document.getElementById('editDocIdInput').value = doc.id;
-  document.getElementById('editDocTitleInput').value = doc.title || doc.fileName || '';
+  document.getElementById('editDocTitleInput').value = doc.title || doc.fileName?.replace(/\.[^/.]+$/, '') || '';
   const noteEl = document.getElementById('editDocOriginalFileNote');
   if (noteEl) {
     noteEl.textContent = `Originaldatei: ${doc.fileName || 'Unbekannt'}`;
@@ -1147,27 +1196,9 @@ function onEditDocModuleOrWeekChange() {
   taskSel.innerHTML = buildTasksOptionsForModAndWeek(modVal, wkVal, '');
 }
 
-function onEditDocCategoryChange() {
-  const catVal = document.getElementById('editDocCategorySelect')?.value || 'Vorlesung';
-  const taskVal = document.getElementById('editDocTaskSelect')?.value || '';
-  const titleInput = document.getElementById('editDocTitleInput');
-  const docId = document.getElementById('editDocIdInput')?.value;
-  const doc = cachedDocsList.find(d => d.id === docId);
-  if (titleInput && taskVal) {
-    titleInput.value = formatDocTitleForTask(taskVal, catVal, doc?.fileName || '');
-  }
-}
-
-function onEditDocTaskSelectChange() {
-  const taskVal = document.getElementById('editDocTaskSelect')?.value || '';
-  const catVal = document.getElementById('editDocCategorySelect')?.value || 'Vorlesung';
-  const titleInput = document.getElementById('editDocTitleInput');
-  const docId = document.getElementById('editDocIdInput')?.value;
-  const doc = cachedDocsList.find(d => d.id === docId);
-  if (titleInput && taskVal) {
-    titleInput.value = formatDocTitleForTask(taskVal, catVal, doc?.fileName || '');
-  }
-}
+/* WICHTIG: Weder Kategorie- noch Aufgaben-Wechsel überschreiben den eingegebenen Dokumentennamen! */
+function onEditDocCategoryChange() {}
+function onEditDocTaskSelectChange() {}
 
 async function saveEditedDoc() {
   const docId = document.getElementById('editDocIdInput')?.value;
@@ -1190,7 +1221,7 @@ async function saveEditedDoc() {
   doc.weekLabel = newWeek;
   doc.taskText = newTask;
   doc.taskHash = newTask ? computeTaskHash(newMod, newWeek, newTask) : '';
-  doc.title = newTitle || (newTask ? formatDocTitleForTask(newTask, newCat, doc.fileName) : doc.fileName);
+  doc.title = newTitle || doc.fileName?.replace(/\.[^/.]+$/, '') || 'Dokument';
   if (scopeChanged) {
     doc.sortOrder = getNextSortOrderInScope(newMod, newWeek, newTask);
   }
@@ -1203,7 +1234,7 @@ async function saveEditedDoc() {
   saveState();
   closeModal('editDocModal');
   if (typeof renderAll === 'function') renderAll();
-  showToast(`✅ Dokument gespeichert (${doc.module} • ${doc.category})!`);
+  showToast(`✅ Dokument gespeichert (${doc.title})!`);
 
   if (typeof scheduleAutoDriveSync === 'function') {
     scheduleAutoDriveSync(500);

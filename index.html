@@ -378,85 +378,72 @@
     </div>
   </div>
 
-  <!-- MODAL 2: DOKUMENT-HOCHLADEFENSTER (MIT REAKTIVER VORAUSWAHL-ERKENNUNG) -->
-  <div class="modal-backdrop" id="uploadDocModal">
-    <div class="modal modal-large">
-      <div class="modal-header">
-        <h3>📤 Dokumente hochladen &amp; Aufgaben zuordnen</h3>
-        <button class="modal-close" onclick="closeModal('uploadDocModal')">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="docModuleSelect">Vorauswahl Modul (nutzt Auswahl für Aufgaben-Erkennung)</label>
-            <select id="docModuleSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('module')"></select>
-          </div>
-          <div class="form-group">
-            <label for="docCategorySelect">Vorauswahl Kategorie (inkl. Formelsammlung &amp; Zusatz)</label>
-            <select id="docCategorySelect" class="select-box full-width" onchange="onUploadPreselectionChanged('category')">
-              <option value="Vorlesung">📖 Vorlesung</option>
-              <option value="Übung">✍️ Übung</option>
-              <option value="Lösungen">✅ Lösungen</option>
-              <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
-              <option value="Formelsammlung">📐 Formelsammlung</option>
-              <option value="Zusatz">➕ Zusatz</option>
-              <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
-              <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="docWeekSelect">Vorauswahl Woche (leer = automatisch passend zur Aufgabe)</label>
-            <select id="docWeekSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('week')"></select>
-          </div>
+  <!-- MODAL 2: DOKUMENT-HOCHLADEFENSTER (MIT DIREKTER NAMENSVERGABE BEI DER KATEGORIE-AUSWAHL) -->
+    <div class="modal-backdrop" id="uploadDocModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3>📤 Dokumente hochladen &amp; Aufgaben zuordnen</h3>
+          <button class="modal-close" onclick="closeModal('uploadDocModal')">&times;</button>
         </div>
-        <div class="form-group" style="margin-top: 16px;">
-          <div id="docDropZone"
-               class="dropzone-large"
-               onclick="document.getElementById('docFileInput').click()"
-               ondragover="handleUploadDropZoneDragOver(event)"
-               ondragleave="handleUploadDropZoneDragLeave(event)"
-               ondrop="handleUploadDropZoneDrop(event)">
-            <div class="dropzone-icon">📂</div>
-            <div class="dropzone-title">Dateien hierher ziehen (auch mehrere nacheinander!) oder tippen</div>
-            <div class="dropzone-sub">
-              Berücksichtigt deine oben gewählte Modul- &amp; Kategorie-Vorauswahl automatisch, um die passende Woche und Aufgabe noch zuverlässiger zu erkennen.
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="docModuleSelect">Vorauswahl Modul</label>
+              <select id="docModuleSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('module')"></select>
             </div>
-            <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; justify-content:center;">
-              <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('docFileInput').click();">💻 Dateien vom Gerät wählen</button>
-              <button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation(); openGoogleDrivePickerModal();">☁️ Direkt aus Google Drive wählen</button>
+            <div class="form-group">
+              <label for="docCategorySelect">Vorauswahl Kategorie</label>
+              <select id="docCategorySelect" class="select-box full-width" onchange="onUploadPreselectionChanged('category')">
+                <option value="Vorlesung">📖 Vorlesung</option>
+                <option value="Übung">✍️ Übung</option>
+                <option value="Lösungen">✅ Lösungen</option>
+                <option value="Hörsaalübung">🏛️ Hörsaalübung</option>
+                <option value="Formelsammlung">📐 Formelsammlung</option>
+                <option value="Zusatz">➕ Zusatz</option>
+                <option value="Testat / Praktikum">🔬 Testat / Praktikum</option>
+                <option value="Klausur / Zusammenfassung">🎓 Klausur / Zusammenfassung</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="docCustomTitleInput">Neuer Dokumentenname (optional)</label>
+              <input type="text" id="docCustomTitleInput" class="full-width" placeholder="Leer = Original-Dateiname behalten" oninput="onUploadCustomTitlePreselectionChanged(this.value)">
+            </div>
+            <div class="form-group">
+              <label for="docWeekSelect">Vorauswahl Woche (leer = automatisch)</label>
+              <select id="docWeekSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('week')"></select>
             </div>
           </div>
-          <input type="file" id="docFileInput" multiple style="display:none;" onchange="handleDocFilesSelected(this.files)">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
-            <strong id="pendingUploadCountLabel" style="font-size:0.84rem; color:var(--primary-dark);">Noch keine Dateien in der Warteschlange</strong>
-            <button type="button" class="btn btn-outline btn-sm" id="clearPendingUploadsBtn" style="display:none;" onclick="clearPendingUploadQueue()">🗑️ Liste leeren</button>
+          <div class="form-group" style="margin-top: 16px;">
+            <div id="docDropZone"
+                 class="dropzone-large"
+                 onclick="document.getElementById('docFileInput').click()"
+                 ondragover="handleUploadDropZoneDragOver(event)"
+                 ondragleave="handleUploadDropZoneDragLeave(event)"
+                 ondrop="handleUploadDropZoneDrop(event)">
+              <div class="dropzone-icon">📂</div>
+              <div class="dropzone-title">Dateien hierher ziehen (auch mehrere nacheinander!) oder tippen</div>
+              <div class="dropzone-sub">
+                Dateien behalten ihren eigenen Namen oder übernehmen deinen oben bzw. unten eingegebenen Wunsch-Namen.
+              </div>
+              <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; justify-content:center;">
+                <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('docFileInput').click();">💻 Dateien vom Gerät wählen</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation(); openGoogleDrivePickerModal();">☁️ Direkt aus Google Drive wählen</button>
+              </div>
+            </div>
+            <input type="file" id="docFileInput" multiple style="display:none;" onchange="handleDocFilesSelected(this.files)">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+              <strong id="pendingUploadCountLabel" style="font-size:0.84rem; color:var(--primary-dark);">Noch keine Dateien in der Warteschlange</strong>
+              <button type="button" class="btn btn-outline btn-sm" id="clearPendingUploadsBtn" style="display:none;" onclick="clearPendingUploadQueue()">🗑️ Liste leeren</button>
+            </div>
+            <div id="docSmartPreviewList" class="smart-sort-preview-list"></div>
           </div>
-          <div id="docSmartPreviewList" class="smart-sort-preview-list"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
+          <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Alle speichern &amp; mit Google Drive synchronisieren</button>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-outline" onclick="closeModal('uploadDocModal')">Abbrechen</button>
-        <button class="btn btn-primary" onclick="handleSaveUploadedDocs()">📥 Alle speichern &amp; mit Google Drive synchronisieren</button>
-      </div>
     </div>
-  </div>
-
-  <!-- MODAL 3: HANDY-OPTIMIERTE DOKUMENT-VORSCHAU -->
-  <div class="modal-backdrop" id="docPreviewModal">
-    <div class="modal modal-large">
-      <div class="modal-header">
-        <h3 id="docPreviewTitle">📄 Dokument-Vorschau</h3>
-        <button class="modal-close" onclick="closePreviewModal()">&times;</button>
-      </div>
-      <div class="modal-body doc-preview-modal-body" id="docPreviewBody"></div>
-      <div class="modal-footer">
-        <button class="btn btn-outline btn-sm" id="docPreviewEditBtn">✏️ Bearbeiten</button>
-        <a id="docPreviewNewTabBtn" class="btn btn-outline btn-sm" target="_blank" rel="noopener">🔍 Vollbild / Mehrseitig</a>
-        <a id="docPreviewDownloadBtn" class="btn btn-primary btn-sm" download>⬇️ Download</a>
-        <button class="btn btn-outline btn-sm" onclick="closePreviewModal()">Schließen</button>
-      </div>
-    </div>
-  </div>
 
   <!-- MODAL 4: GOOGLE DRIVE DIREKT-IMPORT -->
   <div class="modal-backdrop" id="googleDriveModal">
