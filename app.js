@@ -1,6 +1,7 @@
 /* =========================================================
    UNTERPROGRAMM 6: HAUPTSTEUERUNG, LAZY-RENDERING, DIREKTE
-   SPEICHER-NAVIGATION, DRAG & DROP, E-MAIL & PDF (app.js)
+   SPEICHER-NAVIGATION, MITNAHME ANGEHÄNGTER DATEIEN BEIM
+   AUFGABEN-UMZUG, DRAG & DROP, E-MAIL & PDF (app.js)
    ========================================================= */
 let draggedTaskInfo = null;
 let searchDebounceTimer = null;
@@ -63,7 +64,7 @@ function switchTab(tabName) {
   document.getElementById('viewEmail')?.classList.toggle('hidden', tabName !== 'email');
   document.getElementById('tableFilters')?.classList.toggle('hidden', tabName !== 'table');
 
-  // Wenn man auf "Speicher" drückt: Obere Übersicht ausblenden und direkt zum Speicher leiten!
+  // Direkt zum Speicher leiten ohne die obere Karten-Ansicht darüber zu behalten
   document.getElementById('dashboardCards')?.classList.toggle('hidden', isDocsView);
   document.getElementById('topIntegrationStrip')?.classList.toggle('hidden', isDocsView);
   const mobileBanner = document.getElementById('mobileCurrentWeekBanner');
@@ -253,11 +254,15 @@ function renderTable(stats) {
   const tfoot = document.getElementById('tableFoot');
   if (!thead || !tbody || !tfoot) return;
 
+  if (typeof updateStickyHeaderOffset === 'function') {
+    updateStickyHeaderOffset();
+  }
+
   const visibleModules = activeModuleFilter
     ? appState.modules.filter(m => m.shortName === activeModuleFilter)
     : appState.modules;
 
-  // Kopfzeile inkl. Drag & Drop für Allgemeine Modul-Unterlagen direkt auf die Spalte!
+  // Erste Zeile (Modulnamen) läuft dank position: sticky & --sticky-header-offset beim Runterscrollen dauerhaft mit!
   thead.innerHTML = `
     <tr>
       <th>Semesterwoche</th>
@@ -341,7 +346,7 @@ function renderTable(stats) {
                 ondragleave="handleTaskDragLeaveItem(event)"
                 ondrop="handleTaskDropOnItem(event, ${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
               <div class="task-main-row">
-                <span class="drag-handle" title="Ziehen zum Verschieben (Drag & Drop)">⠿</span>
+                <span class="drag-handle" title="Ziehen zum Verschieben (nimmt angehängte Dateien automatisch mit!)">⠿</span>
                 <input type="checkbox" class="task-checkbox" ${item.done ? 'checked' : ''} onchange="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
                 <span class="task-text" onclick="toggleTaskDone(${wIdx}, '${escapeAttr(mod.shortName)}', ${idx})">
                   ${escapeHtml(cleanItemText)} ${inProgBadge} ${badgeHtml}
@@ -410,7 +415,7 @@ function renderTable(stats) {
 
 /* =========================================================
    4. DRAG & DROP IN SPALTEN & AUF AUFGABEN
-      (INKL. DOKUMENTE, GANZE ORDNER & PC-DATEIEN)
+      (INKL. AUTOMATISCHER MITNAHME ANGEHÄNGTER DATEIEN!)
    ========================================================= */
 function handleTaskDragStart(event, weekIdx, shortName, itemIdx) {
   draggedDocId = null;
@@ -423,8 +428,9 @@ function handleTaskDragStart(event, weekIdx, shortName, itemIdx) {
 
 function handleTaskDragEnd(event) {
   event.currentTarget.classList.remove('dragging');
-  document.querySelectorAll('.drag-over-cell, .drag-over-item, .doc-drop-target').forEach(el => {
-    el.classList.remove('drag-over-cell', 'drag-over-item', 'doc-drop-target');
+  if (typeof stopDragAutoScroll === 'function') stopDragAutoScroll();
+  document.querySelectorAll('.drag-over-cell, .drag-over-item, .doc-drop-target, .doc-chip-reorder-target').forEach(el => {
+    el.classList.remove('drag-over-cell', 'drag-over-item', 'doc-drop-target', 'doc-chip-reorder-target');
   });
 }
 
@@ -455,13 +461,13 @@ function handleTaskDragLeaveItem(event) {
 async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemIdx) {
   event.preventDefault();
   event.stopPropagation();
+  if (typeof stopDragAutoScroll === 'function') stopDragAutoScroll();
   event.currentTarget.classList.remove('drag-over-item', 'doc-drop-target');
 
   const week = appState.weeks[targetWeekIdx];
   const taskItem = week?.cells?.[targetMod]?.[targetItemIdx];
   const cleanTask = taskItem ? stripModuleBracketsFromText(taskItem.text, targetMod) : '';
 
-  // Fall 1: Externe Dateien vom PC/iPad direkt auf eine Aufgabe gezogen
   if (event.dataTransfer?.files && event.dataTransfer.files.length > 0 && week) {
     await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, cleanTask);
     return;
@@ -469,7 +475,6 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
 
-  // Fall 2: Ganzer Dokumenten-Ordner auf eine Aufgabe gezogen
   if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
     const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
     draggedDocFolderGroup = null;
@@ -477,7 +482,6 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
     return;
   }
 
-  // Fall 3: Einzelnes Dokument auf eine Aufgabe gezogen
   if (draggedDocId || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
     draggedDocId = null;
@@ -485,17 +489,16 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
     return;
   }
 
-  // Fall 4: Aufgabe umsortieren
   await executeTaskMove(targetWeekIdx, targetMod, targetItemIdx);
 }
 
 async function handleCellDrop(event, targetWeekIdx, targetMod) {
   event.preventDefault();
+  if (typeof stopDragAutoScroll === 'function') stopDragAutoScroll();
   event.currentTarget.classList.remove('drag-over-cell');
   const week = appState.weeks[targetWeekIdx];
   if (!week) return;
 
-  // Fall 1: Externe Dateien direkt in die Spalte/Zelle gezogen (ohne spezielle Aufgabe!)
   if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
     await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, '');
     return;
@@ -503,7 +506,6 @@ async function handleCellDrop(event, targetWeekIdx, targetMod) {
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
 
-  // Fall 2: Ganzer Dokumenten-Ordner direkt in die Spalte/Zelle gezogen
   if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
     const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
     draggedDocFolderGroup = null;
@@ -512,7 +514,6 @@ async function handleCellDrop(event, targetWeekIdx, targetMod) {
     return;
   }
 
-  // Fall 3: Einzelnes Dokument direkt in die Spalte/Zelle gezogen (auch ohne Aufgabe möglich!)
   if (draggedDocId || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
     draggedDocId = null;
@@ -521,7 +522,6 @@ async function handleCellDrop(event, targetWeekIdx, targetMod) {
     return;
   }
 
-  // Fall 4: Aufgabe in diese Zelle verschieben
   const targetList = week.cells[targetMod] || [];
   await executeTaskMove(targetWeekIdx, targetMod, targetList.length);
 }
@@ -532,6 +532,21 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   draggedTaskInfo = null;
   const srcList = appState.weeks[srcWeekIdx]?.cells[srcMod];
   if (!srcList || !srcList[srcIdx]) return;
+
+  const taskTextBeforeMove = stripModuleBracketsFromText(srcList[srcIdx].text, srcMod);
+
+  // WICHTIG: Vor dem Umhängen der Aufgabe alle angehängten Dokumente automatisch mitnehmen!
+  let movedDocsCount = 0;
+  if ((srcWeekIdx !== targetWeekIdx || srcMod !== targetMod) && typeof moveAttachedDocsWithTask === 'function') {
+    movedDocsCount = await moveAttachedDocsWithTask(
+      srcWeekIdx,
+      srcMod,
+      taskTextBeforeMove,
+      targetWeekIdx,
+      targetMod,
+      taskTextBeforeMove
+    );
+  }
 
   const [movedItem] = srcList.splice(srcIdx, 1);
   if (!appState.weeks[targetWeekIdx].cells[targetMod]) {
@@ -552,7 +567,8 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
   if (srcWeekIdx === targetWeekIdx && srcMod === targetMod) {
     showToast('↕️ Reihenfolge aktualisiert!');
   } else {
-    showToast(`📦 Aufgabe nach ${targetMod} (${getWeekShortName(targetWeekIdx)}) verschoben!`);
+    const docsHint = movedDocsCount > 0 ? ` (inkl. ${movedDocsCount} angehängter Datei${movedDocsCount > 1 ? 'en' : ''})` : '';
+    showToast(`📦 Aufgabe${docsHint} nach ${targetMod} (${getWeekShortName(targetWeekIdx)}) verschoben!`);
     if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       if (srcMod !== targetMod && movedItem.googleTaskId) {
         await deleteSingleTaskFromGoogle(srcMod, movedItem.googleTaskId);
@@ -560,6 +576,9 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
         await pushSingleTaskCreateToGoogle(targetWeekIdx, targetMod, movedItem);
       } else {
         await pushSingleTaskMoveOrEditToGoogle(targetWeekIdx, targetMod, movedItem);
+      }
+      if (movedDocsCount > 0 && typeof syncDocumentsWithGoogleDrive === 'function') {
+        syncDocumentsWithGoogleDrive(true);
       }
     }
   }
@@ -727,6 +746,7 @@ function renderFocusView() {
 
 /* =========================================================
    6. AUFGABEN ABHAKEN, HINZUFÜGEN & BEARBEITEN
+      (INKL. MITNAHME ANGEHÄNGTER DATEIEN BEI MODAL-ÄNDERUNG)
    ========================================================= */
 function toggleTaskDone(weekIdx, shortName, itemIdx) {
   const items = appState.weeks[weekIdx]?.cells[shortName];
@@ -841,7 +861,7 @@ function openEditTaskModal(weekIdx, shortName, itemIdx) {
   setTimeout(() => document.getElementById('taskTextInput')?.focus(), 80);
 }
 
-function saveTaskFromModal() {
+async function saveTaskFromModal() {
   const textInput = document.getElementById('taskTextInput');
   const targetMod = document.getElementById('taskModuleSelect').value;
   const rawText = (textInput.value || '').trim().replace(/^[✅⏳]\s*/, '');
@@ -873,6 +893,24 @@ function saveTaskFromModal() {
     const origItemIdx = parseInt(origItemStr, 10);
     const existingItem = appState.weeks[origWeekIdx]?.cells[origMod]?.[origItemIdx];
     if (existingItem) {
+      const oldTaskText = stripModuleBracketsFromText(existingItem.text, origMod);
+      let movedDocsCount = 0;
+
+      // Falls Woche, Modul oder Aufgabentext geändert wurden: Angehängte Dokumente automatisch mitnehmen!
+      if (
+        (origWeekIdx !== targetWeekIdx || origMod !== targetMod || oldTaskText !== cleanText) &&
+        typeof moveAttachedDocsWithTask === 'function'
+      ) {
+        movedDocsCount = await moveAttachedDocsWithTask(
+          origWeekIdx,
+          origMod,
+          oldTaskText,
+          targetWeekIdx,
+          targetMod,
+          cleanText
+        );
+      }
+
       existingItem.text = cleanText;
       existingItem.dueDate = (origWeekIdx !== targetWeekIdx && dueDate === getWeekMondayDateString(origWeekIdx))
         ? mondayDefault
@@ -889,7 +927,9 @@ function saveTaskFromModal() {
       saveState();
       renderAll();
       closeModal('taskModal');
-      showToast('💾 Aufgabe aktualisiert!');
+      const docsInfo = movedDocsCount > 0 ? ` (${movedDocsCount} Datei${movedDocsCount > 1 ? 'en' : ''} mitgenommen)` : '';
+      showToast(`💾 Aufgabe aktualisiert${docsInfo}!`);
+
       if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
         pushSingleTaskMoveOrEditToGoogle(targetWeekIdx, targetMod, existingItem);
       }

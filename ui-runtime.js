@@ -1,6 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 3: LAUFZEIT, ABBRECHEN-STEUERUNG, HANDY-MODI,
-   THEMES, DRAWER, MODALS & SWIPE-SYNC (ui-runtime.js)
+   UNTERPROGRAMM 3: LAUFZEIT, MITLAUFENDE TABELLEN-KOPFZEILE,
+   AUTO-SCROLL BEIM DRAG & DROP, HANDY-MODI & SWIPE-SYNC (ui-runtime.js)
    ========================================================= */
 const MOBILE_LAYOUT_KEY = 'semesterplan_mobile_layout_style'; // 'compact' | 'list'
 
@@ -72,7 +72,76 @@ function cancelCurrentRunningAction() {
 }
 
 /* =========================================================
-   2. MITLAUFENDER HANDY-MODUS (KOMPAKT VS. LISTE) & QUERFORMAT
+   2. DYNAMISCHE HÖHENBERECHNUNG FÜR MITLAUFENDE MODULNAMEN
+      IN DER TABELLEN-ÜBERSICHT (STICKY TABLE HEADER)
+   ========================================================= */
+function updateStickyHeaderOffset() {
+  const headerEl = document.getElementById('appMainHeader') || document.querySelector('header');
+  if (!headerEl) return;
+  const rect = headerEl.getBoundingClientRect();
+  const offsetPx = Math.max(48, Math.round(rect.height));
+  document.documentElement.style.setProperty('--sticky-header-offset', `${offsetPx}px`);
+}
+
+/* =========================================================
+   3. AUTOMATISCHES RUNTER- & HOCHSCROLLEN BEIM DRAG & DROP
+      VON DATEIEN, ORDNERN ODER AUFGABEN IN WEIT ENTFERNTE WOCHEN
+   ========================================================= */
+let dragScrollVelocity = 0;
+let dragScrollRafId = null;
+
+function performContinuousDragScroll() {
+  if (dragScrollVelocity !== 0) {
+    window.scrollBy(0, dragScrollVelocity);
+    dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+  } else {
+    dragScrollRafId = null;
+  }
+}
+
+function stopDragAutoScroll() {
+  dragScrollVelocity = 0;
+  if (dragScrollRafId) {
+    cancelAnimationFrame(dragScrollRafId);
+    dragScrollRafId = null;
+  }
+}
+
+function initDragAutoScroll() {
+  window.addEventListener('dragover', (e) => {
+    const y = e.clientY;
+    if (typeof y !== 'number' || y <= 0) return;
+
+    const viewportH = window.innerHeight;
+    const headerEl = document.getElementById('appMainHeader');
+    const topBoundary = (headerEl ? headerEl.offsetHeight : 64) + 85;
+    const bottomBoundary = viewportH - 95;
+
+    if (y > bottomBoundary) {
+      // Je näher am unteren Bildschirmrand, desto schneller scrollt die Tabelle nach unten
+      const intensity = Math.min(1, (y - bottomBoundary) / 85);
+      dragScrollVelocity = Math.round(6 + intensity * 18);
+      if (!dragScrollRafId) {
+        dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+      }
+    } else if (y < topBoundary) {
+      // Nahe am oberen Rand -> nach oben scrollen
+      const intensity = Math.min(1, (topBoundary - y) / 85);
+      dragScrollVelocity = -Math.round(6 + intensity * 18);
+      if (!dragScrollRafId) {
+        dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+      }
+    } else {
+      stopDragAutoScroll();
+    }
+  }, { passive: true });
+
+  window.addEventListener('dragend', stopDragAutoScroll, { passive: true });
+  window.addEventListener('drop', stopDragAutoScroll, { passive: true });
+}
+
+/* =========================================================
+   4. MITLAUFENDER HANDY-MODUS (KOMPAKT VS. LISTE) & QUERFORMAT
    ========================================================= */
 function detectAndApplyOrientationMode() {
   const isLandscapeViewport = window.innerWidth > window.innerHeight && window.innerWidth <= 1024;
@@ -80,6 +149,7 @@ function detectAndApplyOrientationMode() {
   if (document.body.classList.contains('iphone-view-mode') && window.innerWidth <= 932) {
     document.body.classList.toggle('landscape-mode', isLandscapeViewport);
   }
+  updateStickyHeaderOffset();
 }
 
 function applyMobileLayoutPreference(showFeedback = false) {
@@ -121,6 +191,7 @@ function toggleIphoneView() {
   if (!isIphone) document.body.classList.remove('landscape-mode');
   localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
   updateIphoneBtnState();
+  updateStickyHeaderOffset();
   showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
 }
 
@@ -130,6 +201,7 @@ function toggleLandscapePreview() {
   }
   const isLand = document.body.classList.toggle('landscape-mode');
   updateIphoneBtnState();
+  updateStickyHeaderOffset();
   showToast(isLand ? '🔄 Handy-Querformat (Landscape) aktiviert!' : '📱 Handy-Hochformat (Portrait) aktiviert!');
 }
 
@@ -146,7 +218,7 @@ function updateIphoneBtnState() {
 }
 
 /* =========================================================
-   3. SEITENMENÜ (DRAWER), FARBSCHEMATA & MODALS
+   5. SEITENMENÜ (DRAWER), FARBSCHEMATA & MODALS
    ========================================================= */
 function toggleSideDrawer() {
   const drawer = document.getElementById('sideMenuDrawer');
@@ -230,7 +302,7 @@ function showToast(msg) {
 }
 
 /* =========================================================
-   4. SWIPE-NEULADEN & SYNCHRONISIERUNG AUF IPAD & HANDY
+   6. SWIPE-NEULADEN & SYNCHRONISIERUNG AUF IPAD & HANDY
    ========================================================= */
 let touchStartY = 0;
 let touchPullActive = false;
@@ -292,6 +364,8 @@ window.addEventListener('DOMContentLoaded', () => {
   detectAndApplyOrientationMode();
   applyMobileLayoutPreference(false);
   initTouchSwipeToSync();
+  initDragAutoScroll();
+  setTimeout(updateStickyHeaderOffset, 100);
   window.addEventListener('resize', detectAndApplyOrientationMode);
   window.addEventListener('orientationchange', () => {
     setTimeout(detectAndApplyOrientationMode, 120);

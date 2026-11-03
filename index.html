@@ -100,7 +100,7 @@
     </aside>
 
     <!-- TOP HEADER (STICKY MITLAUFEND) -->
-    <header>
+    <header id="appMainHeader">
       <div class="header-inner">
         <div class="brand">
           <button type="button" class="hamburger-btn" onclick="toggleSideDrawer()" title="Seitenmenü öffnen" aria-label="Menü">
@@ -179,7 +179,7 @@
         </div>
       </div>
 
-      <!-- DASHBOARD PROGRESS CARDS (Wird ausgeblendet, wenn man direkt in den Speicher wechselt!) -->
+      <!-- DASHBOARD PROGRESS CARDS -->
       <div class="dashboard-grid" id="dashboardCards"></div>
 
       <!-- TOOLBAR & TABS -->
@@ -202,7 +202,7 @@
         </div>
       </div>
 
-      <!-- TAB 1: TABLE / RESPONSIVE CARDS -->
+      <!-- TAB 1: TABLE / RESPONSIVE CARDS (MIT MITLAUFENDEN MODULNAMEN) -->
       <div id="viewTable" class="table-wrapper">
         <table id="semesterTable">
           <thead id="tableHead"></thead>
@@ -234,7 +234,7 @@
         </div>
       </div>
 
-      <!-- TAB 3: KOMPAKTER MODUL-DOKUMENTENSPEICHER (DIREKT-ANSICHT OHNE KARTEN DARÜBER) -->
+      <!-- TAB 3: KOMPAKTER MODUL-DOKUMENTENSPEICHER -->
       <div id="viewDocs" class="hidden">
         <div class="panel">
           <div class="docs-header-bar">
@@ -246,7 +246,7 @@
                 <h2 style="border:none; margin:0; padding:0;">📁 Vorlesungs-, Übungs-, Lösungs- &amp; Formelsammlungsspeicher</h2>
               </div>
               <p class="modal-hint" style="margin-bottom:0;">
-                Klicke bei einer Datei auf <strong>⋯</strong>, um Kategorie, Modul, Woche oder Aufgabe jederzeit zu bearbeiten. Du kannst Dateien oder ganze Ordner auch per Drag &amp; Drop verschieben.
+                Klicke bei einer Datei auf <strong>⋯</strong>, um Kategorie, Reihenfolge, Modul, Woche oder Aufgabe zu ändern. Du kannst Dateien auch per Drag &amp; Drop umsortieren.
               </p>
             </div>
             <div class="docs-controls">
@@ -378,7 +378,7 @@
     </div>
   </div>
 
-  <!-- MODAL 2: DOKUMENT-HOCHLADEFENSTER -->
+  <!-- MODAL 2: DOKUMENT-HOCHLADEFENSTER (MIT REAKTIVER VORAUSWAHL-ERKENNUNG) -->
   <div class="modal-backdrop" id="uploadDocModal">
     <div class="modal modal-large">
       <div class="modal-header">
@@ -388,12 +388,12 @@
       <div class="modal-body">
         <div class="form-grid">
           <div class="form-group">
-            <label for="docModuleSelect">Vorauswahl Modul (wird pro Datei intelligent erkannt)</label>
-            <select id="docModuleSelect" class="select-box full-width"></select>
+            <label for="docModuleSelect">Vorauswahl Modul (nutzt Auswahl für Aufgaben-Erkennung)</label>
+            <select id="docModuleSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('module')"></select>
           </div>
           <div class="form-group">
             <label for="docCategorySelect">Vorauswahl Kategorie (inkl. Formelsammlung &amp; Zusatz)</label>
-            <select id="docCategorySelect" class="select-box full-width">
+            <select id="docCategorySelect" class="select-box full-width" onchange="onUploadPreselectionChanged('category')">
               <option value="Vorlesung">📖 Vorlesung</option>
               <option value="Übung">✍️ Übung</option>
               <option value="Lösungen">✅ Lösungen</option>
@@ -405,8 +405,8 @@
             </select>
           </div>
           <div class="form-group">
-            <label for="docWeekSelect">Vorauswahl Woche (leer = automatisch aus Dateiname)</label>
-            <select id="docWeekSelect" class="select-box full-width"></select>
+            <label for="docWeekSelect">Vorauswahl Woche (leer = automatisch passend zur Aufgabe)</label>
+            <select id="docWeekSelect" class="select-box full-width" onchange="onUploadPreselectionChanged('week')"></select>
           </div>
         </div>
         <div class="form-group" style="margin-top: 16px;">
@@ -419,7 +419,7 @@
             <div class="dropzone-icon">📂</div>
             <div class="dropzone-title">Dateien hierher ziehen (auch mehrere nacheinander!) oder tippen</div>
             <div class="dropzone-sub">
-              Jede Datei wird automatisch analysiert. Du kannst Modul, Kategorie, Woche und Aufgabe direkt in der Prüfliste unten anpassen.
+              Berücksichtigt deine oben gewählte Modul- &amp; Kategorie-Vorauswahl automatisch, um die passende Woche und Aufgabe noch zuverlässiger zu erkennen.
             </div>
             <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; justify-content:center;">
               <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('docFileInput').click();">💻 Dateien vom Gerät wählen</button>
@@ -441,18 +441,19 @@
     </div>
   </div>
 
-  <!-- MODAL 3: DOKUMENT-VORSCHAU (MIT SPEICHERFREIGABE BEIM SCHLIESSEN) -->
+  <!-- MODAL 3: HANDY-OPTIMIERTE DOKUMENT-VORSCHAU -->
   <div class="modal-backdrop" id="docPreviewModal">
     <div class="modal modal-large">
       <div class="modal-header">
         <h3 id="docPreviewTitle">📄 Dokument-Vorschau</h3>
         <button class="modal-close" onclick="closePreviewModal()">&times;</button>
       </div>
-      <div class="modal-body" id="docPreviewBody" style="min-height: 60vh; display:flex; justify-content:center; align-items:center;"></div>
+      <div class="modal-body doc-preview-modal-body" id="docPreviewBody"></div>
       <div class="modal-footer">
-        <button class="btn btn-outline" id="docPreviewEditBtn" style="margin-right:auto;">✏️ Kategorie &amp; Zuordnung ändern</button>
-        <button class="btn btn-outline" onclick="closePreviewModal()">Schließen</button>
-        <a id="docPreviewDownloadBtn" class="btn btn-primary" download>⬇️ Datei herunterladen</a>
+        <button class="btn btn-outline btn-sm" id="docPreviewEditBtn">✏️ Bearbeiten</button>
+        <a id="docPreviewNewTabBtn" class="btn btn-outline btn-sm" target="_blank" rel="noopener">🔍 Vollbild / Mehrseitig</a>
+        <a id="docPreviewDownloadBtn" class="btn btn-primary btn-sm" download>⬇️ Download</a>
+        <button class="btn btn-outline btn-sm" onclick="closePreviewModal()">Schließen</button>
       </div>
     </div>
   </div>

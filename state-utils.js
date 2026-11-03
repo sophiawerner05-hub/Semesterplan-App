@@ -1,6 +1,6 @@
 /* =========================================================
-   UNTERPROGRAMM 2: STATE-VERWALTUNG, RAM-SCHONENDE INDEXEDDB,
-   DATUM-HELFER & STATISTIKEN (state-utils.js)
+   UNTERPROGRAMM 2: STATE-VERWALTUNG, RAM-SCHONENDE INDEXEDDB
+   MIT SORTIERREIHENFOLGE, DATUM-HELFER & STATISTIKEN (state-utils.js)
    ========================================================= */
 const STORAGE_KEY = 'semesterplan_app_state_v3';
 const THEME_KEY = 'semesterplan_theme';
@@ -111,6 +111,7 @@ function restoreSilentBackgroundBackupIfNeeded() {
 
 /* =========================================================
    2. SPEICHERSCHONENDE INDEXED-DB (METADATEN GETRENNT VON BLOBS)
+      INKL. SORTIER-UNTERSTÜTZUNG (sortOrder)
    ========================================================= */
 function openDocsDB() {
   if (docsDbPromise) return docsDbPromise;
@@ -158,7 +159,19 @@ function stripHeavyFieldsFromMeta(record) {
   const meta = { ...record };
   delete meta.dataUrl;
   delete meta.blob;
+  if (typeof meta.sortOrder !== 'number') {
+    meta.sortOrder = meta.uploadedAt || Date.now();
+  }
   return meta;
+}
+
+function sortDocsByOrder(list) {
+  return list.sort((a, b) => {
+    const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : (a.uploadedAt || 0);
+    const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : (b.uploadedAt || 0);
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.uploadedAt || 0) - (b.uploadedAt || 0);
+  });
 }
 
 async function migrateLegacyDocsIfNeeded(db) {
@@ -198,9 +211,7 @@ async function refreshDocsCache() {
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => resolve([]);
     });
-    cachedDocsList = metaList
-      .map(stripHeavyFieldsFromMeta)
-      .sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+    cachedDocsList = sortDocsByOrder(metaList.map(stripHeavyFieldsFromMeta));
   } catch (e) {
     console.error('Fehler beim Laden des Dokumenten-Caches:', e);
     cachedDocsList = [];
@@ -234,8 +245,9 @@ async function putDocRecordInDB(docRecord, explicitBlob = null) {
   if (idx !== -1) {
     cachedDocsList[idx] = cleanMeta;
   } else {
-    cachedDocsList.unshift(cleanMeta);
+    cachedDocsList.push(cleanMeta);
   }
+  sortDocsByOrder(cachedDocsList);
   return cleanMeta;
 }
 

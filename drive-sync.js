@@ -1,8 +1,8 @@
 /* =========================================================
    UNTERPROGRAMM 7: OPTIMIERTER GOOGLE DRIVE DOKUMENTEN- &
-   SNAPSHOT-SYNC (drive-sync.js)
+   SNAPSHOT-SYNC INKL. SORTIERREIHENFOLGE (drive-sync.js)
    - Nutzt native Binär-Blobs aus IndexedDB statt RAM-Base64
-   - Fortschrittsanzeige pro Datei & saubere Fehlerbehandlung
+   - Synchronisiert auch die Anordnung (sortOrder) von Dokumenten
    - Überschreibt bei 2 Synchronisationsständen automatisch den ältesten
    ========================================================= */
 const DRIVE_SYNC_FOLDER_NAME = 'Semesterplan_App_Sync';
@@ -40,14 +40,15 @@ async function ensureDriveSyncFolder() {
 }
 
 function buildDriveAppProperties(docRecord) {
-  const safeSlice = (val, max = 110) => String(val || '').slice(0, max);
+  const safeSlice = (val, max = 100) => String(val || '').slice(0, max);
   return {
-    spDocId: safeSlice(docRecord.id, 100),
-    spModule: safeSlice(docRecord.module, 50),
-    spCategory: safeSlice(docRecord.category || 'Vorlesung', 50),
-    spWeekLabel: safeSlice(docRecord.weekLabel, 80),
-    spTaskText: safeSlice(docRecord.taskText, 100),
-    spTitle: safeSlice(docRecord.title, 100),
+    spDocId: safeSlice(docRecord.id, 95),
+    spModule: safeSlice(docRecord.module, 45),
+    spCategory: safeSlice(docRecord.category || 'Vorlesung', 45),
+    spWeekLabel: safeSlice(docRecord.weekLabel, 75),
+    spTaskText: safeSlice(docRecord.taskText, 95),
+    spTitle: safeSlice(docRecord.title, 95),
+    spSortOrder: String(docRecord.sortOrder || docRecord.uploadedAt || 0),
     spManualOverride: docRecord.manualOverride ? 'true' : 'false'
   };
 }
@@ -70,7 +71,6 @@ async function uploadLocalDocToGoogleDrive(docRecord, existingDriveFiles = null)
     );
   }
 
-  // Bei 2+ Kopien in Drive: Älteste behalten/aktualisieren, Überzählige löschen
   if (matchingDriveCopies.length >= 2) {
     matchingDriveCopies.sort((a, b) => new Date(a.modifiedTime || 0) - new Date(b.modifiedTime || 0));
     docRecord.driveFileId = matchingDriveCopies[0].id;
@@ -94,7 +94,6 @@ async function uploadLocalDocToGoogleDrive(docRecord, existingDriveFiles = null)
     return false;
   }
 
-  // Lade Binär-Blob nur für diese eine Datei direkt aus der IndexedDB
   const fileBlob = await getDocBlobFromDB(docRecord.id);
   if (!fileBlob) return false;
 
@@ -154,7 +153,6 @@ async function deleteDocFromGoogleDrive(driveFileId) {
   } catch (e) {}
 }
 
-/* Lädt Datei-Inhalt bei Bedarf von Drive direkt als Blob in die IndexedDB (ohne Base64 im RAM!) */
 async function ensureDriveDocContentLoaded(docRecord) {
   const existingBlob = await getDocBlobFromDB(docRecord.id);
   if (existingBlob) return existingBlob;
@@ -193,6 +191,7 @@ async function saveSyncSnapshotOverwriteOldest(folderId, existingDriveFiles) {
       category: d.category,
       weekLabel: d.weekLabel || '',
       taskText: d.taskText || '',
+      sortOrder: d.sortOrder || d.uploadedAt || 0,
       manualOverride: !!d.manualOverride,
       updatedAt: d.updatedAt || d.uploadedAt || 0
     }))
@@ -258,7 +257,6 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
     const docsToUpload = cachedDocsList.filter(d => !d.driveFileId && d.hasLocalFile);
     let currentUploadIdx = 0;
 
-    // 1. Neue oder geänderte lokale Dateien hochladen / aktualisieren
     for (const localDoc of cachedDocsList) {
       if (isCurrentActionCancelled()) break;
       try {
@@ -280,7 +278,6 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
       }
     }
 
-    // 2. Auf anderen Geräten hinzugefügte oder umgeordnete Drive-Dateien abgleichen
     for (const df of docDriveFiles) {
       if (isCurrentActionCancelled()) break;
       const props = df.appProperties || {};
@@ -305,6 +302,7 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
             existingLocal.weekLabel = props.spWeekLabel !== undefined ? props.spWeekLabel : existingLocal.weekLabel;
             existingLocal.taskText = props.spTaskText !== undefined ? props.spTaskText : existingLocal.taskText;
             existingLocal.title = props.spTitle || existingLocal.title;
+            if (props.spSortOrder) existingLocal.sortOrder = Number(props.spSortOrder) || existingLocal.sortOrder;
             existingLocal.manualOverride = true;
             existingLocal.updatedAt = remoteTime;
             await putDocRecordInDB(existingLocal);
@@ -314,7 +312,7 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
         continue;
       }
 
-      const guess = analyzeFileForSmartSorting(df.name, props.spModule, props.spCategory, props.spWeekLabel, props.spTaskText);
+      const guess = analyzeFileForSmartSorting(df.name, props.spModule, props.spCategory, props.spWeekLabel, props.spTaskText, true);
       const newDoc = {
         id: props.spDocId || `doc_drive_${df.id}`,
         driveFileId: df.id,
@@ -328,6 +326,7 @@ async function syncDocumentsWithGoogleDrive(silent = true) {
         mimeType: df.mimeType || 'application/pdf',
         sizeBytes: Number(df.size) || 0,
         hasLocalFile: false,
+        sortOrder: props.spSortOrder ? Number(props.spSortOrder) : (df.createdTime ? new Date(df.createdTime).getTime() : Date.now()),
         manualOverride: props.spManualOverride === 'true',
         uploadedAt: df.createdTime ? new Date(df.createdTime).getTime() : Date.now(),
         updatedAt: df.modifiedTime ? new Date(df.modifiedTime).getTime() : Date.now()
@@ -426,10 +425,15 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
   }
   startCancelableOperation(`Importiere „${fileName}“ aus Google Drive...`);
   try {
-    const fallbackMod = document.getElementById('docModuleSelect')?.value || '';
-    const fallbackCat = document.getElementById('docCategorySelect')?.value || '';
+    const docsModFilter = document.getElementById('docsModuleFilter')?.value;
+    const docsCatFilter = document.getElementById('docsCategoryFilter')?.value;
+    const fallbackMod = document.getElementById('docModuleSelect')?.value || activeModuleFilter || (docsModFilter && docsModFilter !== 'all' ? docsModFilter : '');
+    const fallbackCat = document.getElementById('docCategorySelect')?.value || (docsCatFilter && docsCatFilter !== 'all' ? docsCatFilter : '');
     const fallbackWeek = document.getElementById('docWeekSelect')?.value || '';
-    const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek);
+
+    const hasExplicitPreselection = !!(fallbackMod || fallbackCat || fallbackWeek);
+    const guess = analyzeFileForSmartSorting(fileName, fallbackMod, fallbackCat, fallbackWeek, '', hasExplicitPreselection);
+
     const newDoc = {
       id: `doc_drive_${driveId}`,
       driveFileId: driveId,
@@ -438,11 +442,12 @@ async function importFileFromGoogleDrive(driveId, fileName, mimeType, sizeBytes,
       category: guess.category,
       weekLabel: guess.weekLabel || '',
       taskText: guess.taskText || '',
-      title: guess.taskText ? formatDocTitleForTask(guess.taskText, guess.category, fileName) : fileName.replace(/\.[^/.]+$/, ''),
+      title: guess.title,
       fileName: fileName,
       mimeType: mimeType || 'application/pdf',
       sizeBytes: sizeBytes || 0,
       hasLocalFile: false,
+      sortOrder: Date.now(),
       manualOverride: true,
       uploadedAt: Date.now(),
       updatedAt: Date.now()

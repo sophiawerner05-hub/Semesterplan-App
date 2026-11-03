@@ -25,6 +25,7 @@
   --task-bg: rgba(255, 255, 255, 0.95);
   --shadow: 0 4px 16px rgba(142, 58, 73, 0.08);
   --radius: 12px;
+  --sticky-header-offset: 66px;
 }
 [data-theme="berry"] {
   --primary: #DB2777;
@@ -281,7 +282,6 @@ body {
   display: none !important;
 }
 
-/* Globaler Ladekreis inkl. Abbrechen-Button */
 .global-loader {
   position: fixed;
   top: max(14px, env(safe-area-inset-top));
@@ -948,12 +948,13 @@ header {
 }
 
 /* =========================================================
-   8. STICKY HANDY-LEISTE (LÄUFT BEIM SCROLLEN MIT!) & TABELLE
+   8. TABELLE MIT MITLAUFENDEN MODULNAMEN (STICKY TABLE HEADER)
+      UND STICKY HANDY-LEISTE
    ========================================================= */
 .mobile-current-week-banner {
   display: none;
   position: sticky;
-  top: calc(max(10px, env(safe-area-inset-top)) + 44px);
+  top: calc(var(--sticky-header-offset, 56px));
   z-index: 185;
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
@@ -970,41 +971,51 @@ header {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
+
+/* WICHTIG: Kein overflow-x: auto auf Desktop, damit position: sticky der Modulnamen
+   beim Runterscrollen bis ganz unten am Browserfenster kleben bleibt! */
 .table-wrapper {
   background: var(--card-bg);
   border-radius: var(--radius);
   border: 1px solid var(--primary-border);
   box-shadow: var(--shadow);
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: visible;
 }
 table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
-  min-width: 980px;
 }
-th {
-  background: var(--primary);
+thead tr:first-child th {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #FFFFFF;
   font-weight: 700;
   font-size: 0.84rem;
-  padding: 12px 10px;
+  padding: 11px 10px;
   text-align: center;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 2px solid var(--primary-dark);
   position: sticky;
-  top: 0;
-  z-index: 10;
+  top: var(--sticky-header-offset, 66px);
+  z-index: 140;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.14);
 }
-th:first-child {
+thead tr:first-child th:first-child {
   width: 132px;
+  border-top-left-radius: calc(var(--radius) - 1px);
+}
+thead tr:first-child th:last-child {
+  border-top-right-radius: calc(var(--radius) - 1px);
+  border-right: none;
 }
 tr.general-docs-row td,
 tr.general-docs-row th {
   background: var(--primary-light) !important;
   color: var(--primary-dark) !important;
   padding: 8px 9px;
-  border: 1px solid var(--primary-border);
+  border-right: 1px solid var(--primary-border);
+  border-bottom: 1px solid var(--primary-border);
   vertical-align: top;
   font-size: 0.78rem;
 }
@@ -1015,10 +1026,14 @@ tr.general-docs-row td:first-child {
 }
 td {
   padding: 9px;
-  border: 1px solid var(--primary-border);
+  border-right: 1px solid var(--primary-border);
+  border-bottom: 1px solid var(--primary-border);
   vertical-align: top;
   font-size: 0.83rem;
   transition: background-color 0.15s, outline 0.15s;
+}
+td:last-child {
+  border-right: none;
 }
 td.drag-over-cell {
   background-color: var(--primary-light) !important;
@@ -1189,7 +1204,7 @@ td.completed-cell {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  min-width: 215px;
+  min-width: 225px;
   background: var(--card-bg);
   border: 1px solid var(--primary-border);
   border-radius: 10px;
@@ -1251,7 +1266,7 @@ td.completed-cell {
   border: 1px solid var(--inprogress-border);
 }
 
-/* Dokument-Chips mit kompaktem ⋯-Menü (verzieht das Layout nicht!) */
+/* Dokument-Chips inkl. Drag-Reorder-Markierung für Dokumente ohne Aufgabe */
 .task-docs-row {
   display: flex;
   flex-wrap: wrap;
@@ -1268,6 +1283,13 @@ td.completed-cell {
   border: 1px solid var(--primary-border);
   background: var(--primary-light);
   position: relative;
+  cursor: grab;
+  transition: transform 0.12s, outline 0.12s;
+}
+.task-doc-chip-group.doc-chip-reorder-target,
+.doc-compact-item.doc-chip-reorder-target {
+  outline: 2px solid var(--primary-dark) !important;
+  transform: scale(1.03);
 }
 .task-doc-chip-group.solution-chip {
   background: var(--success-bg);
@@ -1332,7 +1354,6 @@ td.completed-cell {
   max-width: 145px;
 }
 
-/* Aufklappbarer Aufgaben-Ordner (ebenfalls per Drag & Drop ziehbar) */
 .task-folder-box {
   width: 100%;
   margin-top: 3px;
@@ -1527,6 +1548,8 @@ tr.summary-bar-row td:first-child {
   gap: 6px;
   min-width: 0;
   position: relative;
+  cursor: grab;
+  transition: transform 0.12s, outline 0.12s;
 }
 .doc-item-info {
   flex: 1;
@@ -1578,7 +1601,6 @@ tr.summary-bar-row td:first-child {
   align-items: center;
 }
 
-/* Großes Drag & Drop Hochladefenster */
 .dropzone-large {
   width: 100%;
   min-height: 175px;
@@ -1784,12 +1806,12 @@ tr.summary-bar-row td:first-child {
 }
 
 /* =========================================================
-   11. MODALS & FORMS (IPAD/IOS TOUCH-OPTIMIERT)
+   11. MODALS, HANDY-VOLLBILD-DOKUMENTVORSCHAU & FORMS
    ========================================================= */
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(20, 25, 35, 0.6);
+  background: rgba(20, 25, 35, 0.65);
   display: none;
   justify-content: center;
   align-items: center;
@@ -1809,6 +1831,8 @@ tr.summary-bar-row td:first-child {
   -webkit-overflow-scrolling: touch;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
   border: 1px solid var(--primary-border);
+  display: flex;
+  flex-direction: column;
 }
 .modal-header {
   background: var(--primary);
@@ -1820,9 +1844,13 @@ tr.summary-bar-row td:first-child {
   position: sticky;
   top: 0;
   z-index: 5;
+  flex-shrink: 0;
 }
 .modal-header h3 {
-  font-size: 1.05rem;
+  font-size: 1.02rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .modal-close {
   background: transparent;
@@ -1835,6 +1863,8 @@ tr.summary-bar-row td:first-child {
 }
 .modal-body {
   padding: 20px;
+  overflow-y: auto;
+  flex: 1;
 }
 .modal-footer {
   padding: 12px 20px;
@@ -1844,7 +1874,45 @@ tr.summary-bar-row td:first-child {
   gap: 8px;
   background: var(--bg-page);
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
+
+/* Optimierte Dokument-Vorschau (insb. für Handy & iPad) */
+.doc-preview-modal-body {
+  padding: 10px !important;
+  min-height: 68vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-page);
+}
+.doc-preview-mobile-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--primary-light);
+  border: 1px solid var(--primary-border);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: var(--primary-dark);
+}
+.doc-preview-frame-container {
+  flex: 1;
+  width: 100%;
+  min-height: 62vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--card-bg);
+  border-radius: 8px;
+  border: 1px solid var(--primary-border);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .modal-hint {
   font-size: 0.86rem;
   color: var(--text-muted);
@@ -1924,7 +1992,6 @@ tr.summary-bar-row td:first-child {
 
 /* =========================================================
    12. HANDY- & IPHONE-VORSCHAU AUF DEM LAPTOP
-       (MITLAUFENDE KOMPAKT/LISTE-LEISTE & KOMPAKTE TOP-KARTEN)
    ========================================================= */
 .ios-bottom-nav {
   display: none;
@@ -1989,7 +2056,6 @@ body.iphone-view-mode .container {
   width: 100%;
   max-width: 100%;
 }
-/* WICHTIG: Modulübersicht oben bleibt AUCH bei Liste immer kompakt zweispaltig! */
 body.iphone-view-mode .dashboard-grid,
 body.iphone-view-mode.mobile-list-view .dashboard-grid,
 body.iphone-view-mode.mobile-compact-view .dashboard-grid {
@@ -2180,7 +2246,6 @@ body.iphone-view-mode .ios-bottom-nav {
   font-weight: 700;
 }
 
-/* Kompakt-Ansicht in der Desktop-Handy-Vorschau */
 body.iphone-view-mode.mobile-compact-view tbody tr,
 body.iphone-view-mode.mobile-compact-view thead tr.general-docs-row,
 body.iphone-view-mode.landscape-mode tbody tr,
@@ -2201,6 +2266,7 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
 
 /* =========================================================
    13. NATIVES SMARTPHONE-LAYOUT AUF ECHTEN HANDYS (<= 768px)
+       INKL. VOLLBILD-DOKUMENTVORSCHAU
    ========================================================= */
 @media (max-width: 768px) {
   body,
@@ -2236,7 +2302,7 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
   }
   .mobile-current-week-banner {
     position: sticky;
-    top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+    top: var(--sticky-header-offset, 56px);
     z-index: 185;
   }
   .brand-icon,
@@ -2255,7 +2321,6 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     width: 100%;
     max-width: 100%;
   }
-  /* Modulübersicht oben bleibt AUCH bei Liste immer kompakt zweispaltig! */
   .dashboard-grid,
   body.mobile-list-view .dashboard-grid,
   body.mobile-compact-view .dashboard-grid {
@@ -2364,7 +2429,6 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
     margin-top: 0;
     padding: 4px 10px;
   }
-  /* Kompakt-Ansicht auf echten Smartphones */
   body.mobile-compact-view tbody tr,
   body.mobile-compact-view thead tr.general-docs-row {
     display: grid !important;
@@ -2387,6 +2451,36 @@ body.iphone-view-mode.landscape-mode .docs-compact-grid {
   body.mobile-compact-view .task-doc-chip-title {
     max-width: 95px;
   }
+
+  /* VOLLBILD-DOKUMENTVORSCHAU AUF DEM HANDY */
+  #docPreviewModal.modal-backdrop {
+    padding: 0 !important;
+  }
+  #docPreviewModal .modal {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+  #docPreviewModal .modal-header {
+    padding: max(12px, env(safe-area-inset-top)) 14px 12px 14px;
+  }
+  #docPreviewModal .doc-preview-modal-body {
+    padding: 6px !important;
+    min-height: 0;
+    flex: 1;
+  }
+  #docPreviewModal .doc-preview-frame-container {
+    min-height: 0;
+    height: 100%;
+  }
+  #docPreviewModal .modal-footer {
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom)) 12px;
+    justify-content: space-between;
+  }
+
   .ios-bottom-nav {
     display: flex !important;
     justify-content: space-around;
