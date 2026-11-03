@@ -11,24 +11,33 @@ let openTaskFoldersSet = new Set();
 /* =========================================================
    1. DOKUMENT-MENÜS (⋯) SCHLIESSEN & UMSCHALTEN
    ========================================================= */
-function closeAllDocActionMenus() {
-  document.querySelectorAll('.doc-dropdown-menu.open').forEach(el => el.classList.remove('open'));
-  document.querySelectorAll('.doc-menu-btn.active, .chip-dots-btn.active').forEach(el => el.classList.remove('active'));
-}
+   function closeAllDocActionMenus() {
+     document.querySelectorAll('.doc-dropdown-menu.open').forEach(el => el.classList.remove('open'));
+     document.querySelectorAll('.doc-menu-btn.active, .chip-dots-btn.active').forEach(el => el.classList.remove('active'));
+     document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
+       el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
+     });
+   }
 
-function toggleDocActionMenu(event, menuId) {
-  event.stopPropagation();
-  event.preventDefault();
-  const menu = document.getElementById(menuId);
-  if (!menu) return;
-  const wasOpen = menu.classList.contains('open');
-  if (typeof closeAllTaskActionMenus === 'function') closeAllTaskActionMenus();
-  closeAllDocActionMenus();
-  if (!wasOpen) {
-    menu.classList.add('open');
-    event.currentTarget.classList.add('active');
-  }
-}
+   function toggleDocActionMenu(event, menuId) {
+     event.stopPropagation();
+     event.preventDefault();
+     const menu = document.getElementById(menuId);
+     if (!menu) return;
+     const wasOpen = menu.classList.contains('open');
+     if (typeof closeAllTaskActionMenus === 'function') closeAllTaskActionMenus();
+     closeAllDocActionMenus();
+     if (!wasOpen) {
+       menu.classList.add('open');
+       event.currentTarget.classList.add('active');
+       menu.closest('.task-doc-chip-group')?.classList.add('menu-open-parent');
+       menu.closest('.task-item')?.classList.add('menu-open-parent');
+       menu.closest('.doc-compact-item')?.classList.add('menu-open-parent');
+       menu.closest('.doc-folder-card')?.classList.add('menu-open-parent');
+       menu.closest('td')?.classList.add('menu-open-cell');
+       menu.closest('tr')?.classList.add('menu-open-row');
+     }
+   }
 
 /* =========================================================
    2. FEHLERTOLERANTE AUFGABEN- & WOCHEN-ZUORDNUNG

@@ -1123,7 +1123,6 @@ td.completed-cell {
   border-left: 4px solid var(--inprogress-text);
 }
 .task-item.done {
-  opacity: 0.86;
   background: var(--success-bg);
   border-color: var(--success-border);
 }
@@ -1218,6 +1217,41 @@ td.completed-cell {
 .task-dropdown-menu.open,
 .doc-dropdown-menu.open {
   display: flex;
+}
+/* Hebt die aktive Zeile, Zelle und Karte über alle Nachbarspalten/-zeilen, sobald ein Menü offen ist */
+tr:has(.task-dropdown-menu.open),
+tr:has(.doc-dropdown-menu.open),
+tr.menu-open-row {
+  position: relative;
+  z-index: 180 !important;
+}
+
+td:has(.task-dropdown-menu.open),
+td:has(.doc-dropdown-menu.open),
+td.menu-open-cell {
+  position: relative;
+  z-index: 185 !important;
+}
+
+.task-item:has(.task-dropdown-menu.open),
+.task-item:has(.doc-dropdown-menu.open),
+.task-item.menu-open-parent,
+.doc-folder-card:has(.doc-dropdown-menu.open),
+.doc-folder-card.menu-open-parent,
+.doc-compact-item:has(.doc-dropdown-menu.open),
+.doc-compact-item.menu-open-parent {
+  z-index: 300 !important;
+}
+
+.task-doc-chip-group:has(.doc-dropdown-menu.open),
+.task-doc-chip-group.menu-open-parent {
+  z-index: 310 !important;
+}
+
+.task-dropdown-menu.open,
+.doc-dropdown-menu.open {
+  display: flex;
+  z-index: 999 !important;
 }
 .task-menu-item {
   width: 100%;

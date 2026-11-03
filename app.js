@@ -117,23 +117,29 @@ function populateDocsFilterDropdowns() {
 /* =========================================================
    2. DREI-PUNKTE-MENÜ (⋮) FÜR AUFGABEN
    ========================================================= */
-function closeAllTaskActionMenus() {
-  document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
-  document.querySelectorAll('.task-menu-btn.active').forEach(el => el.classList.remove('active'));
-}
+   function closeAllTaskActionMenus() {
+     document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
+     document.querySelectorAll('.task-menu-btn.active').forEach(el => el.classList.remove('active'));
+     document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
+       el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
+     });
+   }
 
-function toggleTaskActionMenu(event, menuId) {
-  event.stopPropagation();
-  const menu = document.getElementById(menuId);
-  if (!menu) return;
-  const isAlreadyOpen = menu.classList.contains('open');
-  if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
-  closeAllTaskActionMenus();
-  if (!isAlreadyOpen) {
-    menu.classList.add('open');
-    event.currentTarget.classList.add('active');
-  }
-}
+   function toggleTaskActionMenu(event, menuId) {
+     event.stopPropagation();
+     const menu = document.getElementById(menuId);
+     if (!menu) return;
+     const isAlreadyOpen = menu.classList.contains('open');
+     if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
+     closeAllTaskActionMenus();
+     if (!isAlreadyOpen) {
+       menu.classList.add('open');
+       event.currentTarget.classList.add('active');
+       menu.closest('.task-item')?.classList.add('menu-open-parent');
+       menu.closest('td')?.classList.add('menu-open-cell');
+       menu.closest('tr')?.classList.add('menu-open-row');
+     }
+   }
 
 function buildTaskActionMenuHtml(wIdx, shortName, idx, item, prefix = 'tbl') {
   const menuId = `taskMenu_${prefix}_${wIdx}_${shortName.replace(/\s+/g, '')}_${idx}`;
