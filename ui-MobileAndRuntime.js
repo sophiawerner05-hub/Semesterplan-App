@@ -1,81 +1,70 @@
 /* =========================================================
-   UNTERPROGRAMM: LAUFZEIT, ABBRECHEN-STEUERUNG, HANDY-MODI,
-   SWIPE-SYNC & HINTERGRUND-OFFLINE-BACKUP (ui-MobileAndRuntime.js)
+   UNTERPROGRAMM 3: LAUFZEIT, MITLAUFENDE TABELLEN-KOPFZEILE,
+   AUTO-SCROLL BEIM DRAG & DROP, HANDY-MODI & SWIPE-SYNC (ui-runtime.js)
    ========================================================= */
+var MOBILE_LAYOUT_KEY = 'semesterplan_mobile_layout_style';
+var AUTO_BACKUP_DB_KEY = 'semesterplan_auto_offline_backup_v1';
 
-const MOBILE_LAYOUT_KEY = 'semesterplan_mobile_layout_style'; // 'compact' | 'list'
-const AUTO_BACKUP_DB_KEY = 'semesterplan_auto_offline_backup_v1';
-
-let loadingDepth = 0;
-let currentActionAbortController = null;
-let actionCancelledFlag = false;
+var loadingDepth = loadingDepth || 0;
+var currentActionAbortController = currentActionAbortController || null;
+var actionCancelledFlag = actionCancelledFlag || false;
+var toastTimer = toastTimer || null;
 
 /* =========================================================
-   1. LADEKREIS & SOFORTIGES ABBRECHEN LAUFENDER AKTIONEN
+   1. AUTO-SCROLL BEIM DRAG & DROP IN WEIT ENTFERNTE WOCHEN
    ========================================================= */
-function startCancelableOperation(message = 'Lädt...') {
-  actionCancelledFlag = false;
-  if (!currentActionAbortController || currentActionAbortController.signal.aborted) {
-    currentActionAbortController = new AbortController();
-  }
-  showLoading(message);
-  return currentActionAbortController.signal;
-}
+var dragScrollVelocity = 0;
+var dragScrollRafId = null;
 
-function getActiveAbortSignal() {
-  if (!currentActionAbortController) {
-    currentActionAbortController = new AbortController();
-  }
-  return currentActionAbortController.signal;
-}
-
-function isCurrentActionCancelled() {
-  return actionCancelledFlag || (currentActionAbortController && currentActionAbortController.signal.aborted);
-}
-
-function showLoading(message = 'Lädt...') {
-  loadingDepth++;
-  const el = document.getElementById('globalLoadingIndicator');
-  const txt = document.getElementById('globalLoadingText');
-  if (txt) txt.textContent = message;
-  if (el) el.classList.add('active');
-}
-
-function hideLoading() {
-  loadingDepth = Math.max(0, loadingDepth - 1);
-  if (loadingDepth === 0) {
-    document.getElementById('globalLoadingIndicator')?.classList.remove('active');
+function performContinuousDragScroll() {
+  if (dragScrollVelocity !== 0) {
+    window.scrollBy(0, dragScrollVelocity);
+    dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+  } else {
+    dragScrollRafId = null;
   }
 }
 
-function forceHideLoading() {
-  loadingDepth = 0;
-  document.getElementById('globalLoadingIndicator')?.classList.remove('active');
+function stopDragAutoScroll() {
+  dragScrollVelocity = 0;
+  if (dragScrollRafId) {
+    cancelAnimationFrame(dragScrollRafId);
+    dragScrollRafId = null;
+  }
 }
 
-function cancelCurrentRunningAction() {
-  actionCancelledFlag = true;
-  if (currentActionAbortController) {
-    try {
-      currentActionAbortController.abort();
-    } catch (e) {}
-  }
-  currentActionAbortController = new AbortController();
-  if (typeof isSyncInProgress !== 'undefined') {
-    isSyncInProgress = false;
-  }
-  if (typeof isDriveSyncInProgress !== 'undefined') {
-    isDriveSyncInProgress = false;
-  }
-  forceHideLoading();
-  if (typeof showToast === 'function') {
-    showToast('⏹️ Laufende Aktion wurde abgebrochen.');
-  }
+function initDragAutoScroll() {
+  window.addEventListener('dragover', (e) => {
+    const y = e.clientY;
+    if (typeof y !== 'number' || y <= 0) return;
+    const viewportH = window.innerHeight;
+    const headerEl = document.getElementById('appMainHeader');
+    const topBoundary = (headerEl ? headerEl.offsetHeight : 64) + 85;
+    const bottomBoundary = viewportH - 95;
+
+    if (y > bottomBoundary) {
+      const intensity = Math.min(1, (y - bottomBoundary) / 85);
+      dragScrollVelocity = Math.round(6 + intensity * 18);
+      if (!dragScrollRafId) {
+        dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+      }
+    } else if (y < topBoundary) {
+      const intensity = Math.min(1, (topBoundary - y) / 85);
+      dragScrollVelocity = -Math.round(6 + intensity * 18);
+      if (!dragScrollRafId) {
+        dragScrollRafId = requestAnimationFrame(performContinuousDragScroll);
+      }
+    } else {
+      stopDragAutoScroll();
+    }
+  }, { passive: true });
+
+  window.addEventListener('dragend', stopDragAutoScroll, { passive: true });
+  window.addEventListener('drop', stopDragAutoScroll, { passive: true });
 }
 
 /* =========================================================
-   2. AUTOMATISCHE QUERFORMAT-ERKENNUNG (HANDY & IPAD)
-      UND KOMPAKT- VS. LISTEN-ANSICHT AUF DEM HANDY
+   2. HANDY-MODUS (KOMPAKT VS. LISTE) & QUERFORMAT
    ========================================================= */
 function detectAndApplyOrientationMode() {
   const isLandscapeViewport = window.innerWidth > window.innerHeight && window.innerWidth <= 1024;
@@ -83,18 +72,18 @@ function detectAndApplyOrientationMode() {
   if (document.body.classList.contains('iphone-view-mode') && window.innerWidth <= 932) {
     document.body.classList.toggle('landscape-mode', isLandscapeViewport);
   }
+  if (typeof updateStickyHeaderOffset === 'function') updateStickyHeaderOffset();
 }
 
 function applyMobileLayoutPreference(showFeedback = false) {
   const pref = localStorage.getItem(MOBILE_LAYOUT_KEY) || 'compact';
   const isCompact = (pref === 'compact');
-
   document.body.classList.toggle('mobile-compact-view', isCompact);
   document.body.classList.toggle('mobile-list-view', !isCompact);
 
   const headerBtn = document.getElementById('mobileHeaderLayoutBtn');
   if (headerBtn) {
-    headerBtn.textContent = isCompact ? '📐 Kompakt' : '📋 Liste';
+    headerBtn.textContent = isCompact ? '📐 Kompakt ⇄' : '📋 Liste ⇄';
   }
   const drawerLabel = document.getElementById('drawerMobileLayoutLabel');
   if (drawerLabel) {
@@ -104,13 +93,12 @@ function applyMobileLayoutPreference(showFeedback = false) {
   }
   const bannerBtn = document.getElementById('mobileBannerLayoutBtn');
   if (bannerBtn) {
-    bannerBtn.textContent = isCompact ? '📋 Listen-Ansicht' : '📐 Kompakt-Ansicht';
+    bannerBtn.textContent = isCompact ? '📋 Zu Liste' : '📐 Zu Kompakt';
   }
-
   if (showFeedback && typeof showToast === 'function') {
     showToast(isCompact
-      ? '📐 Kompakt-Ansicht aktiviert (mehrspaltig wie im Querformat)'
-      : '📋 Listen-Ansicht aktiviert (untereinander)');
+      ? '📐 Kompakt-Ansicht aktiviert (mehrspaltig)'
+      : '📋 Listen-Ansicht aktiviert (Modul-Übersicht oben bleibt kompakt)');
   }
 }
 
@@ -124,8 +112,8 @@ function toggleMobileLayoutStyle() {
 /* =========================================================
    3. SWIPE-NEULADEN & SYNCHRONISIERUNG AUF IPAD & HANDY
    ========================================================= */
-let touchStartY = 0;
-let touchPullActive = false;
+var touchStartY = 0;
+var touchPullActive = false;
 
 function initTouchSwipeToSync() {
   window.addEventListener('touchstart', (e) => {
@@ -157,7 +145,6 @@ function initTouchSwipeToSync() {
     touchPullActive = false;
   }, { passive: true });
 
-  // Zusätzlich beim Zurückkehren aus dem iPadOS / iOS App-Switcher automatisch synchronisieren
   window.addEventListener('pageshow', (event) => {
     if (event.persisted) {
       triggerSwipeReloadAndSync(true);
@@ -169,12 +156,8 @@ async function triggerSwipeReloadAndSync(silent = false) {
   if (!silent && typeof showToast === 'function') {
     showToast('🔄 Aktualisiere App & synchronisiere mit Google / Drive...');
   }
-  if (typeof refreshDocsCache === 'function') {
-    await refreshDocsCache();
-  }
-  if (typeof renderAll === 'function') {
-    renderAll();
-  }
+  if (typeof refreshDocsCache === 'function') await refreshDocsCache();
+  if (typeof renderAll === 'function') renderAll();
   if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
     if (typeof syncWithGoogleTasksAPI === 'function') {
       await syncWithGoogleTasksAPI(silent);
@@ -185,47 +168,16 @@ async function triggerSwipeReloadAndSync(silent = false) {
   }
 }
 
-/* =========================================================
-   4. AUTOMATISCHES HINTERGRUND-BACKUP (FÜR OFFLINE-MODUS)
-   ========================================================= */
-function saveSilentBackgroundBackup(stateObj) {
-  if (!stateObj) return;
-  try {
-    const payload = {
-      timestamp: Date.now(),
-      state: stateObj
-    };
-    localStorage.setItem(AUTO_BACKUP_DB_KEY, JSON.stringify(payload));
-  } catch (e) {
-    // Ignoriere Quota-Warnung im stillen Hintergrundmodus
-  }
-}
-
-function restoreSilentBackgroundBackupIfNeeded() {
-  try {
-    const raw = localStorage.getItem(AUTO_BACKUP_DB_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && parsed.state && Array.isArray(parsed.state.modules) && Array.isArray(parsed.state.weeks)) {
-      return parsed.state;
-    }
-  } catch (e) {}
-  return null;
-}
-
 window.addEventListener('DOMContentLoaded', () => {
   detectAndApplyOrientationMode();
   applyMobileLayoutPreference(false);
   initTouchSwipeToSync();
-
+  initDragAutoScroll();
+  if (typeof updateStickyHeaderOffset === 'function') {
+    setTimeout(updateStickyHeaderOffset, 100);
+  }
   window.addEventListener('resize', detectAndApplyOrientationMode);
   window.addEventListener('orientationchange', () => {
     setTimeout(detectAndApplyOrientationMode, 120);
   });
-  if (window.matchMedia) {
-    const mq = window.matchMedia('(orientation: landscape)');
-    if (mq.addEventListener) {
-      mq.addEventListener('change', detectAndApplyOrientationMode);
-    }
-  }
 });

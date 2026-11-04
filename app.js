@@ -1,12 +1,425 @@
 /* =========================================================
-   UNTERPROGRAMM 6: HAUPTSTEUERUNG, DAUERHAFTES AUFGABEN-LÖSCHEN
-   (INKL. GOOGLE KALENDER & TOMBSTONES), DRAG & DROP, E-MAIL & PDF (app.js)
+   HAUPTSTEUERUNG DER SEMESTERPLAN APP (app.js)
+   - 100 % selbstständig (enthält alle State-, DB- & UI-Funktionen als Fallback)
+   - Verwendet konfliktfreie var-Deklarationen (keine doppelten const-Fehler)
+   - Zeichnet Modulkarten & Tabelle sofort beim Start
    ========================================================= */
-let draggedTaskInfo = null;
-let searchDebounceTimer = null;
+var STORAGE_KEY = 'semesterplan_app_state_v3';
+var THEME_KEY = 'semesterplan_theme';
+var AUTO_BACKUP_DB_KEY = 'semesterplan_auto_offline_backup_v1';
+var MOBILE_LAYOUT_KEY = 'semesterplan_mobile_layout_style';
 
+var DOCS_DB_NAME = 'SemesterplanDocsDB';
+var DOCS_DB_VERSION = 2;
+var DOCS_META_STORE = 'docs_meta';
+var DOCS_BLOB_STORE = 'docs_blobs';
+var LEGACY_DOCS_STORE = 'module_docs';
+
+var appState = appState || null;
+var activeModuleFilter = activeModuleFilter || null;
+var currentTab = currentTab || 'table';
+var cachedDocsList = cachedDocsList || [];
+var docsDbPromise = docsDbPromise || null;
+var draggedTaskInfo = null;
+var searchDebounceTimer = null;
+
+var loadingDepth = 0;
+var currentActionAbortController = null;
+var actionCancelledFlag = false;
+var toastTimer = null;
+
+/* =========================================================
+   1. SICHERHEITS-BASISFUNKTIONEN (STATE, HASH & DATUM)
+   ========================================================= */
+function stripModuleBracketsFromText(text, shortName = '') {
+  let cleaned = String(text ?? '').trim();
+  if (shortName) {
+    cleaned = cleaned.replace(new RegExp(`^\\[\\s*${shortName}\\s*\\]\\s*:?\\s*`, 'i'), '');
+  }
+  return cleaned.replace(/^\[[^\]]+\]\s*:?\s*/, '').trim();
+}
+
+function normalizeTaskTextForMatch(text, shortName = '') {
+  return stripModuleBracketsFromText(text ? text : '', shortName)
+    .replace(/^[✅⏳📅]\s*/, '')
+    .replace(new RegExp(`^${shortName}\\s*(\\([^)]*\\))?:?\\s*`, 'i'), '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function resolveWeekIdFromLabelOrId(weekIdOrLabel) {
+  const raw = String(weekIdOrLabel ? weekIdOrLabel : '').trim();
+  if (!raw) return 'general';
+  if (/^week_\d+$/i.test(raw)) return raw.toLowerCase();
+  const oneLine = raw.replace(/\n/g, ' ').trim();
+  if (appState && Array.isArray(appState.weeks)) {
+    const found = appState.weeks.find(w =>
+      w.id === raw || w.weekLabel.replace(/\n/g, ' ').trim() === oneLine
+    );
+    if (found) return found.id;
+  }
+  const wkMatch = oneLine.match(/woche\s*(\d+|zusatz)/i);
+  if (wkMatch) {
+    return wkMatch[1].toLowerCase() === 'zusatz' ? 'week_17' : `week_${wkMatch[1]}`;
+  }
+  return oneLine.toLowerCase();
+}
+
+function buildTaskSignature(shortName, weekIdOrLabel, taskText) {
+  const mod = String(shortName ? shortName : '').trim().toLowerCase();
+  const wkId = resolveWeekIdFromLabelOrId(weekIdOrLabel);
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  return [mod, wkId, normTxt].join('::');
+}
+
+function buildModuleTaskSignature(shortName, taskText) {
+  const mod = String(shortName ? shortName : '').trim().toLowerCase();
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  return [mod, '*', normTxt].join('::');
+}
+
+function computeTaskHash(shortName, weekIdOrLabel, taskText) {
+  const normTxt = normalizeTaskTextForMatch(taskText, shortName);
+  if (!normTxt) return '';
+  const sig = buildTaskSignature(shortName, weekIdOrLabel, normTxt);
+  let h = 2166136261;
+  for (let i = 0; i < sig.length; i++) {
+    h ^= sig.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return 'th_' + (h >>> 0).toString(36);
+}
+
+function isTaskTombstoned(shortName, weekIdOrLabel, taskText) {
+  if (!appState || !appState.deletedTaskTombstones) return false;
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  return Boolean(appState.deletedTaskTombstones[exactSig] || appState.deletedTaskTombstones[wildcardSig]);
+}
+
+function registerTaskTombstone(shortName, weekIdOrLabel, taskText) {
+  if (!appState) return;
+  if (!appState.deletedTaskTombstones || typeof appState.deletedTaskTombstones !== 'object') {
+    appState.deletedTaskTombstones = {};
+  }
+  const now = Date.now();
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  appState.deletedTaskTombstones[exactSig] = now;
+  appState.deletedTaskTombstones[wildcardSig] = now;
+}
+
+function clearTaskTombstone(shortName, weekIdOrLabel, taskText) {
+  if (!appState || !appState.deletedTaskTombstones) return;
+  const exactSig = buildTaskSignature(shortName, weekIdOrLabel, taskText);
+  const wildcardSig = buildModuleTaskSignature(shortName, taskText);
+  delete appState.deletedTaskTombstones[exactSig];
+  delete appState.deletedTaskTombstones[wildcardSig];
+}
+
+function purgeTombstonedTasksFromState(stateObj) {
+  if (!stateObj || !Array.isArray(stateObj.weeks) || !stateObj.deletedTaskTombstones) return false;
+  let removedAny = false;
+  const tombs = stateObj.deletedTaskTombstones;
+  for (const week of stateObj.weeks) {
+    for (const mod of (stateObj.modules ? stateObj.modules : [])) {
+      const sName = mod.shortName;
+      const items = (week.cells && week.cells[sName]) ? week.cells[sName] : [];
+      const filtered = items.filter(item => {
+        const exactSig = buildTaskSignature(sName, week.id, item.text);
+        const wildcardSig = buildModuleTaskSignature(sName, item.text);
+        if (tombs[exactSig] || tombs[wildcardSig]) {
+          removedAny = true;
+          return false;
+        }
+        return true;
+      });
+      if (week.cells) week.cells[sName] = filtered;
+    }
+  }
+  return removedAny;
+}
+
+function ensureStateCollections(stateObj) {
+  if (!stateObj) return;
+  if (!Array.isArray(stateObj.deletedGoogleTaskIds)) stateObj.deletedGoogleTaskIds = [];
+  if (!Array.isArray(stateObj.deletedGoogleEventIds)) stateObj.deletedGoogleEventIds = [];
+  if (!stateObj.deletedTaskTombstones || typeof stateObj.deletedTaskTombstones !== 'object') {
+    stateObj.deletedTaskTombstones = {};
+  }
+  if (!stateObj.deletedDocIds || typeof stateObj.deletedDocIds !== 'object') {
+    stateObj.deletedDocIds = {};
+  }
+}
+
+function saveSilentBackgroundBackup(stateObj) {
+  if (!stateObj) return;
+  try {
+    localStorage.setItem(AUTO_BACKUP_DB_KEY, JSON.stringify({
+      timestamp: Date.now(),
+      state: stateObj
+    }));
+  } catch (e) {}
+}
+
+function restoreSilentBackgroundBackupIfNeeded() {
+  try {
+    const raw = localStorage.getItem(AUTO_BACKUP_DB_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.state && Array.isArray(parsed.state.modules) && Array.isArray(parsed.state.weeks)) {
+      return parsed.state;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        Array.isArray(parsed.modules) &&
+        Array.isArray(parsed.weeks) &&
+        parsed.weeks.length > 0 &&
+        parsed.weeks[0].cells
+      ) {
+        appState = parsed;
+        ensureStateCollections(appState);
+        for (const week of appState.weeks) {
+          for (const mod of appState.modules) {
+            const list = week.cells[mod.shortName] ? week.cells[mod.shortName] : [];
+            list.forEach(item => {
+              item.text = stripModuleBracketsFromText(item.text, mod.shortName);
+            });
+          }
+        }
+        purgeTombstonedTasksFromState(appState);
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn('Status-Ladehinweis:', e);
+  }
+
+  const restored = restoreSilentBackgroundBackupIfNeeded();
+  if (restored) {
+    appState = restored;
+    ensureStateCollections(appState);
+    purgeTombstonedTasksFromState(appState);
+    return;
+  }
+
+  if (typeof INITIAL_DATA !== 'undefined') {
+    appState = JSON.parse(JSON.stringify(INITIAL_DATA));
+  } else {
+    appState = { modules: [], weeks: [] };
+  }
+  ensureStateCollections(appState);
+  saveState();
+}
+
+function saveState() {
+  try {
+    if (!appState) return;
+    ensureStateCollections(appState);
+    appState.lastUpdated = Date.now();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    saveSilentBackgroundBackup(appState);
+  } catch (e) {
+    console.error('Fehler beim Speichern:', e);
+  }
+}
+
+/* =========================================================
+   2. UI- & LAUFZEIT-HELFER (INKL. LADEKREIS & THEMES)
+   ========================================================= */
+function startCancelableOperation(message = 'Lädt...') {
+  actionCancelledFlag = false;
+  if (!currentActionAbortController || currentActionAbortController.signal.aborted) {
+    currentActionAbortController = new AbortController();
+  }
+  showLoading(message);
+  return currentActionAbortController.signal;
+}
+
+function updateLoadingText(message) {
+  const txt = document.getElementById('globalLoadingText');
+  if (txt && message) txt.textContent = message;
+}
+
+function getActiveAbortSignal() {
+  if (!currentActionAbortController) {
+    currentActionAbortController = new AbortController();
+  }
+  return currentActionAbortController.signal;
+}
+
+function isCurrentActionCancelled() {
+  return actionCancelledFlag || Boolean(currentActionAbortController && currentActionAbortController.signal.aborted);
+}
+
+function showLoading(message = 'Lädt...') {
+  loadingDepth++;
+  const el = document.getElementById('globalLoadingIndicator');
+  const txt = document.getElementById('globalLoadingText');
+  if (txt) txt.textContent = message;
+  if (el) el.classList.add('active');
+}
+
+function hideLoading() {
+  loadingDepth = Math.max(0, loadingDepth - 1);
+  if (loadingDepth === 0) {
+    document.getElementById('globalLoadingIndicator')?.classList.remove('active');
+  }
+}
+
+function forceHideLoading() {
+  loadingDepth = 0;
+  document.getElementById('globalLoadingIndicator')?.classList.remove('active');
+}
+
+function cancelCurrentRunningAction() {
+  actionCancelledFlag = true;
+  if (currentActionAbortController) {
+    try { currentActionAbortController.abort(); } catch (e) {}
+  }
+  currentActionAbortController = new AbortController();
+  if (typeof isSyncInProgress !== 'undefined') isSyncInProgress = false;
+  if (typeof isDriveSyncInProgress !== 'undefined') isDriveSyncInProgress = false;
+  forceHideLoading();
+  showToast('⏹️ Laufende Aktion wurde abgebrochen.');
+}
+
+function updateStickyHeaderOffset() {
+  const headerEl = document.getElementById('appMainHeader') || document.querySelector('header');
+  if (!headerEl) return;
+  const rect = headerEl.getBoundingClientRect();
+  const offsetPx = Math.max(48, Math.round(rect.height));
+  document.documentElement.style.setProperty('--sticky-header-offset', `${offsetPx}px`);
+}
+
+function openModal(id) {
+  document.getElementById(id)?.classList.add('open');
+}
+
+function closeModal(id) {
+  document.getElementById(id)?.classList.remove('open');
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+function toggleSideDrawer() {
+  const drawer = document.getElementById('sideMenuDrawer');
+  const backdrop = document.getElementById('sideDrawerBackdrop');
+  if (!drawer || !backdrop) return;
+  const isOpen = drawer.classList.toggle('open');
+  backdrop.classList.toggle('open', isOpen);
+}
+
+function closeSideDrawer() {
+  document.getElementById('sideMenuDrawer')?.classList.remove('open');
+  document.getElementById('sideDrawerBackdrop')?.classList.remove('open');
+}
+
+function buildThemeMenuUI() {
+  if (typeof THEMES === 'undefined') return;
+  const html = Object.entries(THEMES).map(([key, t]) => `
+    <button type="button" class="theme-option-item" data-theme-key="${key}" onclick="changeTheme('${key}', true)">
+      <span class="theme-preview-dots">
+        <span class="dot" style="background:${t.colors[0]}"></span>
+        <span class="dot" style="background:${t.colors[1]}"></span>
+        <span class="dot" style="background:${t.colors[2]}"></span>
+      </span>
+      <span class="theme-option-label">${escapeHtml(t.label)}</span>
+    </button>
+  `).join('');
+  const menu = document.getElementById('themeMenu');
+  if (menu) menu.innerHTML = html;
+  const drawerList = document.getElementById('drawerThemeList');
+  if (drawerList) drawerList.innerHTML = html;
+}
+
+function toggleThemeMenu(event) {
+  if (event) event.stopPropagation();
+  document.getElementById('themeMenu')?.classList.toggle('hidden');
+}
+
+function changeTheme(themeName, showNotification = true) {
+  if (typeof THEMES === 'undefined') return;
+  const themeKey = THEMES[themeName] ? themeName : 'rose';
+  const themeObj = THEMES[themeKey];
+  document.documentElement.setAttribute('data-theme', themeKey);
+  localStorage.setItem(THEME_KEY, themeKey);
+
+  const dotsEl = document.getElementById('currentThemeDots');
+  const labelEl = document.getElementById('currentThemeLabel');
+  if (dotsEl) {
+    dotsEl.innerHTML = `
+      <span class="dot" style="background:${themeObj.colors[0]}"></span>
+      <span class="dot" style="background:${themeObj.colors[1]}"></span>
+      <span class="dot" style="background:${themeObj.colors[2]}"></span>
+    `;
+  }
+  if (labelEl) labelEl.textContent = themeObj.label;
+
+  document.querySelectorAll('.theme-option-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-theme-key') === themeKey);
+  });
+  document.getElementById('themeMenu')?.classList.add('hidden');
+  if (typeof renderEmailPreview === 'function' && currentTab === 'email') {
+    renderEmailPreview();
+  }
+  if (showNotification) {
+    showToast(`🎨 Farbdesign „${themeObj.label}“ aktiviert!`);
+  }
+}
+
+function toggleIphoneView() {
+  const isIphone = document.body.classList.toggle('iphone-view-mode');
+  if (!isIphone) document.body.classList.remove('landscape-mode');
+  localStorage.setItem('semesterplan_iphone_view', isIphone ? 'true' : 'false');
+  updateIphoneBtnState();
+  updateStickyHeaderOffset();
+  showToast(isIphone ? '📱 Handy-Ansicht aktiviert' : '💻 Desktop-Tabellenansicht aktiviert');
+}
+
+function toggleLandscapePreview() {
+  if (!document.body.classList.contains('iphone-view-mode')) {
+    document.body.classList.add('iphone-view-mode');
+  }
+  const isLand = document.body.classList.toggle('landscape-mode');
+  updateIphoneBtnState();
+  updateStickyHeaderOffset();
+  showToast(isLand ? '🔄 Handy-Querformat aktiviert!' : '📱 Handy-Hochformat aktiviert!');
+}
+
+function updateIphoneBtnState() {
+  const btn = document.getElementById('iphoneViewBtn');
+  const landBtn = document.getElementById('landscapeToggleBtn');
+  const isIphone = document.body.classList.contains('iphone-view-mode');
+  const isLand = document.body.classList.contains('landscape-mode');
+  if (btn) btn.textContent = isIphone ? '💻 Desktop-Ansicht' : '📱 Handy-Ansicht';
+  if (landBtn) {
+    landBtn.classList.toggle('hidden', !isIphone);
+    landBtn.textContent = isLand ? '📱 Hochformat' : '🔄 Querformat';
+  }
+}
+
+/* =========================================================
+   3. INITIALISIERUNG (SOFORTIGES RENDERN DER TABELLE!)
+   ========================================================= */
 async function initApp() {
-  showLoading('Lade Semesterplan & Dokumente...');
   try {
     loadState();
     buildThemeMenuUI();
@@ -21,8 +434,18 @@ async function initApp() {
     populateFocusWeekDropdown();
     populateDocsFilterDropdowns();
     selectCurrentCalendarWeek(false);
-    await refreshDocsCache();
+
+    // WICHTIG: Sofortiges Zeichnen von Modulkarten & Tabelle (noch vor IndexedDB!)
     renderAll();
+
+    // Danach Dokumente aus IndexedDB laden (mit Timeout-Schutz, falls DB blockiert)
+    if (typeof refreshDocsCache === 'function') {
+      await Promise.race([
+        refreshDocsCache(),
+        new Promise(res => setTimeout(res, 2000))
+      ]);
+      renderAll();
+    }
 
     document.addEventListener('click', (e) => {
       const themeContainer = document.getElementById('themeDropdownContainer');
@@ -37,8 +460,10 @@ async function initApp() {
         if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
       }
     });
+  } catch (err) {
+    console.error('Fehler beim Starten der App:', err);
   } finally {
-    hideLoading();
+    forceHideLoading();
   }
 }
 
@@ -50,7 +475,7 @@ function debouncedRenderAll() {
 }
 
 /* =========================================================
-   1. TAB-WECHSEL & DIREKTE SPEICHER-WEITERLEITUNG
+   4. TAB-WECHSEL & DIREKTE SPEICHER-WEITERLEITUNG
    ========================================================= */
 function switchTab(tabName) {
   currentTab = tabName;
@@ -108,38 +533,38 @@ function setModuleFilter(shortName) {
 
 function populateDocsFilterDropdowns() {
   const filterMod = document.getElementById('docsModuleFilter');
-  if (filterMod && appState?.modules) {
+  if (filterMod && appState && Array.isArray(appState.modules)) {
     filterMod.innerHTML = `<option value="all">Alle Module anzeigen</option>` +
       appState.modules.map(m => `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`).join('');
   }
 }
 
 /* =========================================================
-   2. DREI-PUNKTE-MENÜ (⋮) FÜR AUFGABEN
+   5. DREI-PUNKTE-MENÜ (⋮) FÜR AUFGABEN
    ========================================================= */
-   function closeAllTaskActionMenus() {
-     document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
-     document.querySelectorAll('.task-menu-btn.active').forEach(el => el.classList.remove('active'));
-     document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
-       el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
-     });
-   }
+function closeAllTaskActionMenus() {
+  document.querySelectorAll('.task-dropdown-menu.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.task-menu-btn.active').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.menu-open-parent, .menu-open-cell, .menu-open-row').forEach(el => {
+    el.classList.remove('menu-open-parent', 'menu-open-cell', 'menu-open-row');
+  });
+}
 
-   function toggleTaskActionMenu(event, menuId) {
-     event.stopPropagation();
-     const menu = document.getElementById(menuId);
-     if (!menu) return;
-     const isAlreadyOpen = menu.classList.contains('open');
-     if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
-     closeAllTaskActionMenus();
-     if (!isAlreadyOpen) {
-       menu.classList.add('open');
-       event.currentTarget.classList.add('active');
-       menu.closest('.task-item')?.classList.add('menu-open-parent');
-       menu.closest('td')?.classList.add('menu-open-cell');
-       menu.closest('tr')?.classList.add('menu-open-row');
-     }
-   }
+function toggleTaskActionMenu(event, menuId) {
+  event.stopPropagation();
+  const menu = document.getElementById(menuId);
+  if (!menu) return;
+  const isAlreadyOpen = menu.classList.contains('open');
+  if (typeof closeAllDocActionMenus === 'function') closeAllDocActionMenus();
+  closeAllTaskActionMenus();
+  if (!isAlreadyOpen) {
+    menu.classList.add('open');
+    event.currentTarget.classList.add('active');
+    menu.closest('.task-item')?.classList.add('menu-open-parent');
+    menu.closest('td')?.classList.add('menu-open-cell');
+    menu.closest('tr')?.classList.add('menu-open-row');
+  }
+}
 
 function buildTaskActionMenuHtml(wIdx, shortName, idx, item, prefix = 'tbl') {
   const menuId = `taskMenu_${prefix}_${wIdx}_${shortName.replace(/\s+/g, '')}_${idx}`;
@@ -172,9 +597,10 @@ function buildTaskActionMenuHtml(wIdx, shortName, idx, item, prefix = 'tbl') {
 }
 
 /* =========================================================
-   3. SPEICHERSCHONENDES LAZY-RENDERING (NUR AKTIVER TAB)
+   6. RENDERING VON DASHBOARD & TABELLE
    ========================================================= */
 function renderAll() {
+  if (!appState) loadState();
   if (!appState) return;
   const stats = calculateStats();
   if (currentTab !== 'docs') {
@@ -185,7 +611,7 @@ function renderAll() {
   } else if (currentTab === 'focus') {
     renderFocusView();
   } else if (currentTab === 'docs') {
-    renderModuleDocsView();
+    if (typeof renderModuleDocsView === 'function') renderModuleDocsView();
   } else if (currentTab === 'email') {
     renderEmailPreview();
   }
@@ -200,7 +626,7 @@ function renderDashboard(stats) {
   const container = document.getElementById('dashboardCards');
   if (!container) return;
   container.innerHTML = appState.modules.map(mod => {
-    const s = stats.moduleStats[mod.shortName];
+    const s = stats.moduleStats[mod.shortName] || { pct: 0, completed: 0, total: 0, inProgress: 0, docCount: 0 };
     const isActive = activeModuleFilter === mod.shortName ? 'active-filter' : '';
     const inProgSub = s.inProgress > 0 ? ` • ⏳ ${s.inProgress}` : '';
     return `
@@ -265,6 +691,8 @@ function renderTable(stats) {
     ? appState.modules.filter(m => m.shortName === activeModuleFilter)
     : appState.modules;
 
+  const hasGenCellRenderer = typeof renderGeneralModuleDocsCellHtml === 'function';
+
   thead.innerHTML = `
     <tr>
       <th>Semesterwoche</th>
@@ -276,8 +704,8 @@ function renderTable(stats) {
         <td data-module="${escapeAttr(m.shortName + ' (Allgemein)')}"
             ondragover="handleCellDragOver(event)"
             ondragleave="handleCellDragLeave(event)"
-            ondrop="handleGeneralCellDrop(event, '${escapeAttr(m.shortName)}')">
-          ${renderGeneralModuleDocsCellHtml(m.shortName)}
+            ondrop="if(typeof handleGeneralCellDrop==='function') handleGeneralCellDrop(event, '${escapeAttr(m.shortName)}')">
+          ${hasGenCellRenderer ? renderGeneralModuleDocsCellHtml(m.shortName) : ''}
         </td>
       `).join('')}
     </tr>
@@ -316,8 +744,8 @@ function renderTable(stats) {
       const shownDocIds = new Set();
 
       if (filteredItems.length === 0) {
-        const remainingDocs = getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds);
-        const remainingDocsHtml = renderUnassignedWeekDocsHtml(remainingDocs);
+        const remainingDocs = typeof getRemainingWeekDocs === 'function' ? getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds) : [];
+        const remainingDocsHtml = typeof renderUnassignedWeekDocsHtml === 'function' ? renderUnassignedWeekDocsHtml(remainingDocs) : '';
         if (remainingDocs.length > 0) rowHasMatch = true;
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
@@ -333,10 +761,10 @@ function renderTable(stats) {
           const badgeHtml = isTestat ? `<span class="testat-tag">TESTAT</span>` : '';
           const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
           const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
-          const taskDocs = getDocsForTask(wIdx, mod.shortName, cleanItemText);
+          const taskDocs = typeof getDocsForTask === 'function' ? getDocsForTask(wIdx, mod.shortName, cleanItemText) : [];
           taskDocs.forEach(d => shownDocIds.add(d.id));
           const folderKey = `tbl_${wIdx}_${mod.shortName.replace(/\s+/g, '')}_${idx}`;
-          const docsChipsHtml = renderTaskDocChipsHtml(taskDocs, folderKey);
+          const docsChipsHtml = typeof renderTaskDocChipsHtml === 'function' ? renderTaskDocChipsHtml(taskDocs, folderKey) : '';
           const actionMenuHtml = buildTaskActionMenuHtml(wIdx, mod.shortName, idx, item, 'tbl');
 
           return `
@@ -360,8 +788,8 @@ function renderTable(stats) {
           `;
         }).join('');
 
-        const remainingDocs = getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds);
-        const remainingDocsHtml = renderUnassignedWeekDocsHtml(remainingDocs);
+        const remainingDocs = typeof getRemainingWeekDocs === 'function' ? getRemainingWeekDocs(wIdx, mod.shortName, shownDocIds) : [];
+        const remainingDocsHtml = typeof renderUnassignedWeekDocsHtml === 'function' ? renderUnassignedWeekDocsHtml(remainingDocs) : '';
         cellsHtml += `
           <td class="${cellClass}" data-module="${escapeAttr(mod.shortName)}" ${dropAttrs}>
             <ul class="task-list">${listHtml}</ul>
@@ -395,14 +823,14 @@ function renderTable(stats) {
     <tr class="summary-quote-row">
       <td>📊 Lernfortschritt (%)</td>
       ${visibleModules.map(m => {
-        const s = stats.moduleStats[m.shortName];
+        const s = stats.moduleStats[m.shortName] || { pct: 0, completed: 0, total: 0 };
         return `<td data-module="${escapeAttr(m.shortName)}">${s.pct} % (${s.completed}/${s.total})</td>`;
       }).join('')}
     </tr>
     <tr class="summary-bar-row">
       <td>📈 Fortschritts-Balken</td>
       ${visibleModules.map(m => {
-        const s = stats.moduleStats[m.shortName];
+        const s = stats.moduleStats[m.shortName] || { pct: 0 };
         return `
           <td data-module="${escapeAttr(m.shortName)}">
             <div class="progress-track">
@@ -416,11 +844,11 @@ function renderTable(stats) {
 }
 
 /* =========================================================
-   4. DRAG & DROP IN SPALTEN & AUF AUFGABEN
+   7. DRAG & DROP IN SPALTEN & AUF AUFGABEN
    ========================================================= */
 function handleTaskDragStart(event, weekIdx, shortName, itemIdx) {
-  draggedDocId = null;
-  draggedDocFolderGroup = null;
+  if (typeof draggedDocId !== 'undefined') draggedDocId = null;
+  if (typeof draggedDocFolderGroup !== 'undefined') draggedDocFolderGroup = null;
   draggedTaskInfo = { weekIdx, shortName, itemIdx };
   event.currentTarget.classList.add('dragging');
   event.dataTransfer.effectAllowed = 'move';
@@ -448,7 +876,10 @@ function handleCellDragLeave(event) {
 function handleTaskDragOverItem(event) {
   event.preventDefault();
   event.stopPropagation();
-  if (draggedDocId || draggedDocFolderGroup || (event.dataTransfer?.types && event.dataTransfer.types.includes('Files'))) {
+  const isDocDrag = (typeof draggedDocId !== 'undefined' && draggedDocId) ||
+                    (typeof draggedDocFolderGroup !== 'undefined' && draggedDocFolderGroup) ||
+                    (event.dataTransfer?.types && event.dataTransfer.types.includes('Files'));
+  if (isDocDrag) {
     event.currentTarget.classList.add('doc-drop-target');
   } else {
     event.currentTarget.classList.add('drag-over-item');
@@ -469,24 +900,28 @@ async function handleTaskDropOnItem(event, targetWeekIdx, targetMod, targetItemI
   const taskItem = week?.cells?.[targetMod]?.[targetItemIdx];
   const cleanTask = taskItem ? stripModuleBracketsFromText(taskItem.text, targetMod) : '';
 
-  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0 && week) {
+  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0 && week && typeof handleDirectExternalFilesDropInCell === 'function') {
     await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, cleanTask);
     return;
   }
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
 
-  if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
+  if ((typeof draggedDocFolderGroup !== 'undefined' && draggedDocFolderGroup) || rawData.startsWith('DOCFOLDER:')) {
     const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
     draggedDocFolderGroup = null;
-    await assignDocToTaskByDragDrop(ids, targetWeekIdx, targetMod, targetItemIdx);
+    if (typeof assignDocToTaskByDragDrop === 'function') {
+      await assignDocToTaskByDragDrop(ids, targetWeekIdx, targetMod, targetItemIdx);
+    }
     return;
   }
 
-  if (draggedDocId || rawData.startsWith('DOC:')) {
+  if ((typeof draggedDocId !== 'undefined' && draggedDocId) || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
     draggedDocId = null;
-    await assignDocToTaskByDragDrop(docId, targetWeekIdx, targetMod, targetItemIdx);
+    if (typeof assignDocToTaskByDragDrop === 'function') {
+      await assignDocToTaskByDragDrop(docId, targetWeekIdx, targetMod, targetItemIdx);
+    }
     return;
   }
 
@@ -500,25 +935,29 @@ async function handleCellDrop(event, targetWeekIdx, targetMod) {
   const week = appState.weeks[targetWeekIdx];
   if (!week) return;
 
-  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
+  if (event.dataTransfer?.files && event.dataTransfer.files.length > 0 && typeof handleDirectExternalFilesDropInCell === 'function') {
     await handleDirectExternalFilesDropInCell(event.dataTransfer.files, targetMod, week.weekLabel, '');
     return;
   }
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
 
-  if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
+  if ((typeof draggedDocFolderGroup !== 'undefined' && draggedDocFolderGroup) || rawData.startsWith('DOCFOLDER:')) {
     const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
     draggedDocFolderGroup = null;
-    await assignDocIdsToTarget(ids, targetMod, week.weekLabel, '');
+    if (typeof assignDocIdsToTarget === 'function') {
+      await assignDocIdsToTarget(ids, targetMod, week.weekLabel, '');
+    }
     showToast(`📂 Ordner (${ids.length} Dateien) in ${targetMod} (${getWeekShortName(targetWeekIdx)}) abgelegt!`);
     return;
   }
 
-  if (draggedDocId || rawData.startsWith('DOC:')) {
+  if ((typeof draggedDocId !== 'undefined' && draggedDocId) || rawData.startsWith('DOC:')) {
     const docId = draggedDocId || rawData.replace('DOC:', '');
     draggedDocId = null;
-    await assignDocIdsToTarget([docId], targetMod, week.weekLabel, '');
+    if (typeof assignDocIdsToTarget === 'function') {
+      await assignDocIdsToTarget([docId], targetMod, week.weekLabel, '');
+    }
     showToast(`📁 Dokument in Spalte ${targetMod} (${getWeekShortName(targetWeekIdx)}) abgelegt.`);
     return;
   }
@@ -536,8 +975,6 @@ async function executeTaskMove(targetWeekIdx, targetMod, targetIndex) {
 
   const taskTextBeforeMove = stripModuleBracketsFromText(srcList[srcIdx].text, srcMod);
 
-  // Beim Verschieben einer Aufgabe in eine andere Woche / Modul:
-  // Alte Position als gelöscht markieren, damit kein Zweitgerät die Aufgabe am alten Ort wiederherstellt!
   if (srcWeekIdx !== targetWeekIdx || srcMod !== targetMod) {
     const oldExactSig = buildTaskSignature(srcMod, appState.weeks[srcWeekIdx].id, taskTextBeforeMove);
     appState.deletedTaskTombstones = appState.deletedTaskTombstones || {};
@@ -606,7 +1043,7 @@ function moveTaskOrder(weekIdx, shortName, itemIdx, direction) {
 }
 
 /* =========================================================
-   5. TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE
+   8. TAB 2: WOCHEN-FOKUS & RÜCKSTÄNDE
    ========================================================= */
 function populateFocusWeekDropdown() {
   const select = document.getElementById('focusWeekSelect');
@@ -666,10 +1103,10 @@ function renderFocusView() {
       const cleanItemText = stripModuleBracketsFromText(item.text, mod.shortName);
       const statusClass = item.done ? 'done' : (item.inProgress ? 'in-progress' : '');
       const inProgBadge = (!item.done && item.inProgress) ? `<span class="inprogress-tag">⏳ Angefangen</span>` : '';
-      const taskDocs = getDocsForTask(selIdx, mod.shortName, cleanItemText);
+      const taskDocs = typeof getDocsForTask === 'function' ? getDocsForTask(selIdx, mod.shortName, cleanItemText) : [];
       taskDocs.forEach(d => shownDocIds.add(d.id));
       const folderKey = `foc_${selIdx}_${mod.shortName.replace(/\s+/g, '')}_${idx}`;
-      const docsChipsHtml = renderTaskDocChipsHtml(taskDocs, folderKey);
+      const docsChipsHtml = typeof renderTaskDocChipsHtml === 'function' ? renderTaskDocChipsHtml(taskDocs, folderKey) : '';
       const actionMenuHtml = buildTaskActionMenuHtml(selIdx, mod.shortName, idx, item, 'foc');
 
       return `
@@ -689,8 +1126,8 @@ function renderFocusView() {
       `;
     }).join('');
 
-    const remainingDocs = getRemainingWeekDocs(selIdx, mod.shortName, shownDocIds);
-    const remainingDocsHtml = renderUnassignedWeekDocsHtml(remainingDocs);
+    const remainingDocs = typeof getRemainingWeekDocs === 'function' ? getRemainingWeekDocs(selIdx, mod.shortName, shownDocIds) : [];
+    const remainingDocsHtml = typeof renderUnassignedWeekDocsHtml === 'function' ? renderUnassignedWeekDocsHtml(remainingDocs) : '';
 
     upcomingHtml += `
       <div class="module-focus-card"
@@ -725,8 +1162,8 @@ function renderFocusView() {
       if (openItems.length > 0) {
         const listHtml = openItems.map(({ item, idx }) => {
           const cleanItemText = stripModuleBracketsFromText(item.text, mod.shortName);
-          const taskDocs = getDocsForTask(wIdx, mod.shortName, cleanItemText);
-          const docsChipsHtml = renderTaskDocChipsHtml(taskDocs, `ovd_${wIdx}_${mod.shortName}_${idx}`);
+          const taskDocs = typeof getDocsForTask === 'function' ? getDocsForTask(wIdx, mod.shortName, cleanItemText) : [];
+          const docsChipsHtml = typeof renderTaskDocChipsHtml === 'function' ? renderTaskDocChipsHtml(taskDocs, `ovd_${wIdx}_${mod.shortName}_${idx}`) : '';
           return `
             <li class="task-item ${item.inProgress ? 'in-progress' : ''}">
               <div class="task-main-row">
@@ -754,7 +1191,7 @@ function renderFocusView() {
 }
 
 /* =========================================================
-   6. AUFGABEN ABHAKEN, HINZUFÜGEN, BEARBEITEN & DAUERHAFT LÖSCHEN
+   9. AUFGABEN ABHAKEN, HINZUFÜGEN, BEARBEITEN & DAUERHAFT LÖSCHEN
    ========================================================= */
 function toggleTaskDone(weekIdx, shortName, itemIdx) {
   const items = appState.weeks[weekIdx]?.cells[shortName];
@@ -894,7 +1331,6 @@ async function saveTaskFromModal() {
   const origMod = document.getElementById('editTaskOrigModule').value;
   const origItemStr = document.getElementById('editTaskItemIdx').value;
 
-  // Wenn eine Aufgabe bewusst gespeichert wird, eventuelle frühere Lösch-Sperre für diesen Namen aufheben
   clearTaskTombstone(targetMod, appState.weeks[targetWeekIdx].id, cleanText);
 
   if (!appState.weeks[targetWeekIdx].cells[targetMod]) {
@@ -910,7 +1346,6 @@ async function saveTaskFromModal() {
       let movedDocsCount = 0;
 
       if (origWeekIdx !== targetWeekIdx || origMod !== targetMod || oldTaskText !== cleanText) {
-        // Alte Signatur als verschoben/gelöscht vormerken, damit kein anderes Gerät die alte Version wiederherstellt
         const oldExactSig = buildTaskSignature(origMod, appState.weeks[origWeekIdx].id, oldTaskText);
         appState.deletedTaskTombstones = appState.deletedTaskTombstones || {};
         appState.deletedTaskTombstones[oldExactSig] = Date.now();
@@ -991,11 +1426,8 @@ function deleteTaskItem(weekIdx, shortName, itemIdx) {
   if (!items || !items[itemIdx]) return;
   const removed = items.splice(itemIdx, 1)[0];
 
-  // 1. Dauerhafte Lösch-Sperre (Tombstone) setzen, damit weder Google Tasks,
-  //    noch Google Kalender oder ein Zweitgerät die gelöschte Aufgabe wiederherstellen!
   registerTaskTombstone(shortName, week.id, removed.text);
 
-  // 2. Falls an diese gelöschte Aufgabe Dokumente gekoppelt waren, bleiben diese als Wochen-Dokumente erhalten
   const normRemovedTask = normalizeTaskTextForMatch(removed.text, shortName);
   cachedDocsList.forEach(doc => {
     if (doc.module === shortName && normalizeTaskTextForMatch(doc.taskText || '', shortName) === normRemovedTask) {
@@ -1003,11 +1435,10 @@ function deleteTaskItem(weekIdx, shortName, itemIdx) {
       doc.taskHash = '';
       doc.needsDriveUpdate = true;
       doc.updatedAt = Date.now();
-      putDocRecordInDB(doc);
+      if (typeof putDocRecordInDB === 'function') putDocRecordInDB(doc);
     }
   });
 
-  // 3. Sowohl aus Google Tasks ALS AUCH aus dem Google Kalender löschen!
   if (removed.googleTaskId) {
     if (typeof isGoogleConnected === 'function' && isGoogleConnected()) {
       deleteSingleTaskFromGoogle(shortName, removed.googleTaskId);
@@ -1060,7 +1491,9 @@ async function syncAndClean() {
         week.cells[mod.shortName] = cleaned;
       }
     }
-    await sanitizeAndDeduplicateDocsSilent();
+    if (typeof sanitizeAndDeduplicateDocsSilent === 'function') {
+      await sanitizeAndDeduplicateDocsSilent();
+    }
     saveState();
     renderAll();
     if (typeof syncWithGoogleTasksAPI === 'function' && !isCurrentActionCancelled()) {
@@ -1072,7 +1505,7 @@ async function syncAndClean() {
 }
 
 /* =========================================================
-   7. TAB 4: E-MAIL BRIEFING GENERATOR & PDF-EXPORT
+   10. TAB 4: E-MAIL BRIEFING GENERATOR & PDF-EXPORT
    ========================================================= */
 function buildEmailHtmlObject() {
   const statsObj = calculateStats();
@@ -1082,7 +1515,9 @@ function buildEmailHtmlObject() {
   const upcomingWeekLabel = week.weekLabel.replace(/\n/g, ' ');
   const mondayStr = formatIsoDateDE(getWeekMondayDateString(selIdx));
   const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
-  const themeObj = THEMES[currentThemeKey] || THEMES.rose;
+  const themeObj = (typeof THEMES !== 'undefined' && THEMES[currentThemeKey]) ? THEMES[currentThemeKey] : {
+    colors: ['#C66A7A', '#8E3A49', '#FAF6F6'], light: '#F9EFEF', border: '#F0E1E4'
+  };
   const primaryColor = themeObj.colors[0];
   const darkColor = themeObj.colors[1];
   const lightBg = themeObj.light;
@@ -1205,7 +1640,7 @@ function triggerMailtoFallback() {
 
 function openPdfModal() {
   const currentThemeKey = document.documentElement.getAttribute('data-theme') || 'rose';
-  const themeObj = THEMES[currentThemeKey] || THEMES.rose;
+  const themeObj = (typeof THEMES !== 'undefined' && THEMES[currentThemeKey]) ? THEMES[currentThemeKey] : { label: 'Original Rosa' };
   const labelEl = document.getElementById('pdfThemeNameLabel');
   if (labelEl) labelEl.textContent = themeObj.label;
   if (currentTab !== 'table') {
