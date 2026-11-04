@@ -1,18 +1,308 @@
 /* =========================================================
-   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, ZUVERLÄSSIGE VORSCHAU BEIM
-   ANKLICKEN, EIGENE NAMENSVERGABE & SORTIERUNG (docs-manager.js)
+   UNTERPROGRAMM 5: DOKUMENTENSPEICHER, SELBSTHEILENDE VORSCHAU,
+   EIGENE NAMENSVERGABE BEIM UPLOAD & SMART-SORT (docs-manager.js)
    ========================================================= */
-let draggedDocId = null;
-let draggedDocFolderGroup = null;
-let pendingUploadQueue = [];
-let activePreviewObjectUrl = null;
-let openTaskFoldersSet = new Set();
+var draggedDocId = null;
+var draggedDocFolderGroup = null;
+var pendingUploadQueue = [];
+var activePreviewObjectUrl = null;
+var openTaskFoldersSet = new Set();
 
-// Hilfsvariablen, damit ein versehentlicher 1-2px Maus-Ruckler beim Klicken trotzdem die Vorschau öffnet
-let lastDocDragStartTime = 0;
-let lastDocDragStartCoords = { x: 0, y: 0 };
-let lastDraggedDocIdForClickFallback = null;
-let docDropOccurred = false;
+var lastDocDragStartTime = 0;
+var lastDocDragStartCoords = { x: 0, y: 0 };
+var lastDraggedDocIdForClickFallback = null;
+var docDropOccurred = false;
+
+/* =========================================================
+   0. INTEGRIERTE SMART-SORT-FUNKTIONEN (FALLBACK-SICHER)
+   ========================================================= */
+function getCategoryMeta(catValue) {
+  if (typeof DOC_CATEGORIES !== 'undefined' && Array.isArray(DOC_CATEGORIES)) {
+    return DOC_CATEGORIES.find(c => c.value === catValue) || DOC_CATEGORIES[0];
+  }
+  return { value: catValue || 'Vorlesung', label: '📖 Vorlesung', icon: '📖', chipClass: '' };
+}
+
+function extractTaskTokens(text) {
+  const s = String(text ?? '');
+  const tokens = [];
+  const patterns = [
+    /\b(LE\s*0*(\d+))/gi,
+    /\b((?:HSÜ|HSU|HSUE)\s*0*(\d+))/gi,
+    /\b((?:ÜB|UB|UEB|ÜBUNGSBLATT|BLATT|ÜBUNG|UEBUNG)\s*0*(\d+))/gi,
+    /\b(V\s*0*(\d+)(?:\s*[–\-]\s*V?\s*0*(\d+))?)/gi,
+    /\b(2-0*(\d{1,2}))/gi,
+    /\b(TESTAT\s*0*(\d+))/gi,
+    /\b(TYP\s*([A-Z]))\b/gi
+  ];
+  for (const regex of patterns) {
+    let m;
+    while ((m = regex.exec(s)) !== null) {
+      let full = m[1].toUpperCase().replace(/\s+/g, '');
+      full = full
+        .replace(/^(HSUE|HSU)/, 'HSÜ')
+        .replace(/^(UEB|UB|ÜBUNGSBLATT|BLATT|ÜBUNG|UEBUNG)/, 'ÜB')
+        .replace(/([A-ZÄÖÜ]+)0+(\d+)/g, '$1$2');
+      tokens.push(full);
+      const rangeMatch = full.match(/^V(\d+)[–\-]V?(\d+)$/);
+      if (rangeMatch) {
+        tokens.push(`V${rangeMatch[1]}`);
+        tokens.push(`V${rangeMatch[2]}`);
+      }
+    }
+  }
+  return [...new Set(tokens)];
+}
+
+function extractStandaloneNumbers(text) {
+  const cleaned = String(text ?? '')
+    .replace(/202\d/g, '')
+    .replace(/ws\s*2\d[\/\-]?\d*/gi, '')
+    .replace(/wise\s*2\d[\/\-]?\d*/gi, '')
+    .replace(/s\.\s*\d+[–\-]\d+/gi, '');
+  const nums = [];
+  const rx = /(?:^|[^a-zA-Z0-9])0*(\d{1,2})(?=[^0-9]|$)/g;
+  let m;
+  while ((m = rx.exec(cleaned)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n >= 0 && n <= 20) nums.push(n);
+  }
+  return [...new Set(nums)];
+}
+
+function extractTopicKeywords(text) {
+  const stopWords = new Set([
+    'vorlesung', 'übung', 'uebung', 'hörsaalübung', 'hoersaaluebung', 'teil',
+    'kapitel', 'blatt', 'lösung', 'loesung', 'musterlösung', 'aufgabensammlung',
+    'selfassessment', 'test', 'woche', 'beispiele', 'einführung', 'grundlagen'
+  ]);
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-zäöüß0-9]+/gi, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 4 && !stopWords.has(w) && !/^\d+$/.test(w));
+}
+
+function doesTaskMatchCategory(taskText, category) {
+  const lower = String(taskText ? taskText : '').toLowerCase();
+  if (category === 'Übung' || category === 'Lösungen') {
+    return /(\büb\s*\d+|übung|aufgabensammlung)/i.test(lower);
+  }
+  if (category === 'Hörsaalübung') {
+    return /(\bhsü\s*\d+|hörsaalübung)/i.test(lower);
+  }
+  if (category === 'Vorlesung') {
+    return /(vorlesung|\bv\d+|\ble\s*\d+|\b2-\d{2})/i.test(lower);
+  }
+  if (category === 'Testat / Praktikum') {
+    return /(testat|selfassessment|praktikum)/i.test(lower);
+  }
+  return true;
+}
+
+/* Dokumente übernehmen NICHT mehr den Aufgabennamen, sondern behalten ihren Dateinamen */
+function formatDocTitleForTask(taskText, category, fallbackFileName = '') {
+  const baseName = String(fallbackFileName ? fallbackFileName : '').replace(/\.[^/.]+$/, '').trim();
+  return baseName ? baseName : 'Dokument';
+}
+
+function analyzeFileForSmartSorting(
+  fileName,
+  fallbackModule = '',
+  fallbackCategory = '',
+  fallbackWeekLabel = '',
+  explicitTaskText = '',
+  preferPreselection = true
+) {
+  const rawName = String(fileName ? fileName : '').replace(/\.[^/.]+$/, '').trim();
+  const lower = rawName.toLowerCase();
+  const reasonParts = [];
+
+  let detectedMod = fallbackModule ? fallbackModule : ((appState && appState.modules && appState.modules[0]) ? appState.modules[0].shortName : 'ModSim');
+  const explicitModRules = [
+    { mod: 'ModSim',     rx: /\b(modsim|modellierung|simulation|fem\b|numpy|2-0\d|2-10|rwp|awp|quadratur)\b/i },
+    { mod: 'Informatik', rx: /\b(info|informatik|le\s*0*\d+|programmierung|oop|verkettete|ringtausch)\b/i },
+    { mod: 'Elektro',    rx: /\b(elektro|elektrotechnik|kirchhoff|ohm|kondensator|spule|wechselstrom|halbleiter|diode|transistor|opv|operationsverstärker)\b/i },
+    { mod: 'Mathe 2',    rx: /\b(mathe|hm\s*2|höhere\s*mathematik|gauß|gauss|matrizen|determinante|hesse|taylor|fubini|eigenwert)\b/i },
+    { mod: 'CAD',        rx: /\b(cad|testat|toleranz|passung|oberfläche|wellenlagerung|maschinenelement|selfassessment|typ\s*[a-j])\b/i }
+  ];
+
+  let filenameMatchedMod = null;
+  for (const r of explicitModRules) {
+    if (r.rx.test(rawName)) {
+      filenameMatchedMod = r.mod;
+      break;
+    }
+  }
+
+  if (preferPreselection && fallbackModule) {
+    detectedMod = fallbackModule;
+    reasonParts.push(`Modul (Vorauswahl): ${detectedMod}`);
+  } else if (filenameMatchedMod) {
+    detectedMod = filenameMatchedMod;
+    reasonParts.push(`Modul erkannt: ${detectedMod}`);
+  } else if (fallbackModule) {
+    detectedMod = fallbackModule;
+    reasonParts.push(`Modul: ${detectedMod}`);
+  }
+
+  let detectedCat = fallbackCategory ? fallbackCategory : 'Vorlesung';
+  let filenameMatchedCat = null;
+
+  if (/(lösung|loesung|musterlösung|solution|\blsg\b|\bsol\b)/i.test(lower)) {
+    filenameMatchedCat = 'Lösungen';
+  } else if (/(formelsammlung|formeln|formelblatt|cheatsheet|merkblatt)/i.test(lower)) {
+    filenameMatchedCat = 'Formelsammlung';
+  } else if (/(zusatz|ergänzung|extra|bonus|vertiefung)/i.test(lower)) {
+    filenameMatchedCat = 'Zusatz';
+  } else if (/(hsü|hsu|hsue|hörsaalübung)/i.test(lower)) {
+    filenameMatchedCat = 'Hörsaalübung';
+  } else if (/(testat|praktikum|labor)/i.test(lower)) {
+    filenameMatchedCat = 'Testat / Praktikum';
+  } else if (/(klausur|altklausur|zusammenfassung|prüfung|lernzettel)/i.test(lower)) {
+    filenameMatchedCat = 'Klausur / Zusammenfassung';
+  } else if (/(üb\b|ub\b|ueb|übung|uebung|übungsblatt|blatt|aufgabensammlung)/i.test(lower)) {
+    filenameMatchedCat = 'Übung';
+  } else if (/(vorlesung|\bvl\b|\bv\d+|\ble\s*\d+|skript|folien)/i.test(lower)) {
+    filenameMatchedCat = 'Vorlesung';
+  }
+
+  if (filenameMatchedCat === 'Lösungen' || filenameMatchedCat === 'Formelsammlung') {
+    detectedCat = filenameMatchedCat;
+    reasonParts.push(`Kategorie erkannt: ${detectedCat}`);
+  } else if (preferPreselection && fallbackCategory) {
+    detectedCat = fallbackCategory;
+    reasonParts.push(`Kategorie (Vorauswahl): ${detectedCat}`);
+  } else if (filenameMatchedCat) {
+    detectedCat = filenameMatchedCat;
+    reasonParts.push(`Kategorie erkannt: ${detectedCat}`);
+  }
+
+  let detectedWeekLabel = fallbackWeekLabel ? fallbackWeekLabel.replace(/\n/g, ' ') : '';
+  let detectedTaskText = explicitTaskText ? explicitTaskText : '';
+
+  const isGeneralByDefault = (detectedCat === 'Formelsammlung' || detectedCat === 'Klausur / Zusammenfassung');
+  const fileTokens = extractTaskTokens(rawName);
+  const fileNumbers = extractStandaloneNumbers(rawName);
+  const fileKeywords = extractTopicKeywords(rawName);
+
+  const syntheticTokens = [...fileTokens];
+  if (fileNumbers.length > 0) {
+    for (const num of fileNumbers) {
+      if (detectedCat === 'Übung' || detectedCat === 'Lösungen') {
+        syntheticTokens.push(`ÜB${num}`);
+      } else if (detectedCat === 'Hörsaalübung') {
+        syntheticTokens.push(`HSÜ${num}`);
+      } else if (detectedCat === 'Vorlesung') {
+        if (detectedMod === 'Informatik') syntheticTokens.push(`LE${num}`);
+        if (detectedMod === 'ModSim') syntheticTokens.push(`2-${String(num).padStart(2, '0')}`);
+        syntheticTokens.push(`V${num}`);
+      } else if (detectedCat === 'Testat / Praktikum') {
+        syntheticTokens.push(`TESTAT${num}`);
+      }
+    }
+  }
+
+  if (!detectedTaskText && appState && Array.isArray(appState.weeks)) {
+    let bestCandidate = null;
+    let bestScore = 0;
+
+    const weeksToScan = detectedWeekLabel
+      ? appState.weeks.filter(w => w.weekLabel.replace(/\n/g, ' ') === detectedWeekLabel)
+      : appState.weeks;
+
+    for (const week of weeksToScan) {
+      const cellTasks = (week.cells && week.cells[detectedMod]) ? week.cells[detectedMod] : [];
+      for (const item of cellTasks) {
+        const cleanTxt = stripModuleBracketsFromText(item.text, detectedMod);
+        const itemTokens = extractTaskTokens(cleanTxt);
+        const itemKeywords = extractTopicKeywords(cleanTxt);
+        let score = 0;
+        let matchNote = '';
+
+        const exactTokenHit = fileTokens.find(ft => itemTokens.includes(ft));
+        if (exactTokenHit) {
+          score += 100;
+          matchNote = `Kürzel ${exactTokenHit}`;
+        }
+
+        if (!exactTokenHit) {
+          const synthHit = syntheticTokens.find(st => itemTokens.includes(st));
+          if (synthHit && doesTaskMatchCategory(cleanTxt, detectedCat)) {
+            score += 85;
+            matchNote = `${detectedCat}-Nr. (${synthHit})`;
+          }
+        }
+
+        const keywordHits = fileKeywords.filter(fk =>
+          itemKeywords.some(ik => ik.includes(fk) || fk.includes(ik))
+        );
+        if (keywordHits.length > 0) {
+          score += keywordHits.length * 40;
+          if (!matchNote) matchNote = `Thema „${keywordHits[0]}“`;
+        }
+
+        if (score > 0 && doesTaskMatchCategory(cleanTxt, detectedCat)) {
+          score += 20;
+        }
+
+        if (score === 0 && detectedWeekLabel && doesTaskMatchCategory(cleanTxt, detectedCat)) {
+          score = 25;
+          matchNote = `Passend zu ${detectedCat} in gewählter Woche`;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = {
+            weekLabel: week.weekLabel.replace(/\n/g, ' '),
+            weekShort: week.weekLabel.split('\n')[0],
+            taskText: cleanTxt,
+            matchNote
+          };
+        }
+      }
+    }
+
+    if (bestCandidate && bestScore >= 25) {
+      detectedWeekLabel = bestCandidate.weekLabel;
+      detectedTaskText = bestCandidate.taskText;
+      reasonParts.push(`Zugeordnet über ${bestCandidate.matchNote} → ${bestCandidate.weekShort}`);
+    }
+  }
+
+  if (!detectedWeekLabel && !isGeneralByDefault && appState && Array.isArray(appState.weeks)) {
+    const wkMatch = rawName.match(/(?:woche|week|kw)\s*0*(\d{1,2})/i);
+    if (wkMatch) {
+      const wkNum = parseInt(wkMatch[1], 10);
+      if (wkNum >= 1 && wkNum <= appState.weeks.length) {
+        const wkObj = appState.weeks[wkNum - 1];
+        detectedWeekLabel = wkObj.weekLabel.replace(/\n/g, ' ');
+        const tasksInWk = (wkObj.cells && wkObj.cells[detectedMod]) ? wkObj.cells[detectedMod] : [];
+        const catMatchingTask = tasksInWk.find(t => doesTaskMatchCategory(t.text, detectedCat));
+        if (catMatchingTask) {
+          detectedTaskText = stripModuleBracketsFromText(catMatchingTask.text, detectedMod);
+        } else if (tasksInWk.length === 1) {
+          detectedTaskText = stripModuleBracketsFromText(tasksInWk[0].text, detectedMod);
+        }
+        reasonParts.push(`Woche ${wkNum} erkannt`);
+      }
+    }
+  }
+
+  if (isGeneralByDefault && !fallbackWeekLabel && !detectedTaskText) {
+    detectedWeekLabel = '';
+    reasonParts.push('Allgemeine Modul-Unterlage');
+  }
+
+  return {
+    module: detectedMod,
+    category: detectedCat,
+    weekLabel: detectedWeekLabel,
+    taskText: detectedTaskText,
+    title: rawName ? rawName : 'Dokument',
+    reason: reasonParts.length > 0 ? reasonParts.join(' • ') : 'Standard-Vorauswahl'
+  };
+}
 
 /* =========================================================
    1. DOKUMENT-MENÜS (⋯) SCHLIESSEN & UMSCHALTEN
@@ -49,7 +339,7 @@ function toggleDocActionMenu(event, menuId) {
    2. FEHLERTOLERANTE AUFGABEN- & WOCHEN-ZUORDNUNG
    ========================================================= */
 function normalizeWeekLabelOneLine(lbl) {
-  return String(lbl || '').replace(/\n/g, ' ').trim();
+  return String(lbl ? lbl : '').replace(/\n/g, ' ').trim();
 }
 
 function isSameWeekLabelOrId(docWeekLabel, targetWeekObj) {
@@ -68,7 +358,7 @@ function getNextSortOrderInScope(moduleName, weekLabelOneLine, taskText = '') {
   for (const d of cachedDocsList) {
     if (d.module !== moduleName) continue;
     if (resolveWeekIdFromLabelOrId(d.weekLabel) !== wkId) continue;
-    if (normalizeTaskTextForMatch(d.taskText || '', moduleName) !== normTask) continue;
+    if (normalizeTaskTextForMatch(d.taskText ? d.taskText : '', moduleName) !== normTask) continue;
     const ord = typeof d.sortOrder === 'number' ? d.sortOrder : 0;
     if (ord > maxOrder) maxOrder = ord;
   }
@@ -76,7 +366,7 @@ function getNextSortOrderInScope(moduleName, weekLabelOneLine, taskText = '') {
 }
 
 function getDocsForTask(weekIdx, shortName, taskText) {
-  const week = appState?.weeks?.[weekIdx];
+  const week = (appState && appState.weeks) ? appState.weeks[weekIdx] : null;
   if (!week) return [];
   const cleanTaskNorm = normalizeTaskTextForMatch(taskText, shortName);
   if (!cleanTaskNorm) return [];
@@ -91,7 +381,7 @@ function getDocsForTask(weekIdx, shortName, taskText) {
       return true;
     }
 
-    const docTaskNorm = normalizeTaskTextForMatch(doc.taskText || '', shortName);
+    const docTaskNorm = normalizeTaskTextForMatch(doc.taskText ? doc.taskText : '', shortName);
     const sameWeek = !doc.weekLabel || isSameWeekLabelOrId(doc.weekLabel, week);
 
     if (docTaskNorm && sameWeek) {
@@ -105,7 +395,7 @@ function getDocsForTask(weekIdx, shortName, taskText) {
     }
 
     if (isSameWeekLabelOrId(doc.weekLabel, week) && !docTaskNorm && taskTokens.length > 0) {
-      const docTokens = extractTaskTokens((doc.fileName || '') + ' ' + (doc.title || ''));
+      const docTokens = extractTaskTokens((doc.fileName ? doc.fileName : '') + ' ' + (doc.title ? doc.title : ''));
       if (taskTokens.some(t => docTokens.includes(t))) return true;
     }
     return false;
@@ -115,7 +405,7 @@ function getDocsForTask(weekIdx, shortName, taskText) {
 }
 
 function getRemainingWeekDocs(weekIdx, shortName, shownDocIds) {
-  const week = appState?.weeks?.[weekIdx];
+  const week = (appState && appState.weeks) ? appState.weeks[weekIdx] : null;
   if (!week) return [];
   const remaining = cachedDocsList.filter(doc =>
     doc.module === shortName &&
@@ -137,8 +427,8 @@ function getGeneralModuleDocs(shortName) {
    3. ANGEHÄNGTE DATEIEN BEIM BEWEGEN EINER AUFGABE MITNEHMEN
    ========================================================= */
 async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeekIdx, newMod, newTaskText) {
-  const oldWeek = appState?.weeks?.[oldWeekIdx];
-  const newWeek = appState?.weeks?.[newWeekIdx];
+  const oldWeek = (appState && appState.weeks) ? appState.weeks[oldWeekIdx] : null;
+  const newWeek = (appState && appState.weeks) ? appState.weeks[newWeekIdx] : null;
   if (!oldWeek || !newWeek) return 0;
 
   const cleanOldTask = stripModuleBracketsFromText(oldTaskText, oldMod);
@@ -179,12 +469,12 @@ async function moveAttachedDocsWithTask(oldWeekIdx, oldMod, oldTaskText, newWeek
 function getPeerDocsInSameScope(doc) {
   if (!doc) return [];
   const docWkId = resolveWeekIdFromLabelOrId(doc.weekLabel);
-  const docTaskNorm = normalizeTaskTextForMatch(doc.taskText || '', doc.module);
+  const docTaskNorm = normalizeTaskTextForMatch(doc.taskText ? doc.taskText : '', doc.module);
 
   const peers = cachedDocsList.filter(d => {
     if (d.module !== doc.module) return false;
     if (resolveWeekIdFromLabelOrId(d.weekLabel) !== docWkId) return false;
-    const dTaskNorm = normalizeTaskTextForMatch(d.taskText || '', d.module);
+    const dTaskNorm = normalizeTaskTextForMatch(d.taskText ? d.taskText : '', d.module);
     return dTaskNorm === docTaskNorm;
   });
   return sortDocsByOrder(peers);
@@ -249,11 +539,10 @@ async function handleDocChipDropOnChip(event, targetDocId) {
   event.currentTarget.classList.remove('doc-chip-reorder-target');
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
-  const sourceDocId = draggedDocId || (rawData.startsWith('DOC:') ? rawData.replace('DOC:', '') : '');
+  const sourceDocId = draggedDocId ? draggedDocId : (rawData.startsWith('DOC:') ? rawData.replace('DOC:', '') : '');
   draggedDocId = null;
 
   if (!sourceDocId) return;
-  // Falls auf denselben Chip losgelassen wurde -> als Klick werten und Vorschau öffnen!
   if (sourceDocId === targetDocId) {
     previewModuleDoc(targetDocId);
     return;
@@ -265,7 +554,7 @@ async function handleDocChipDropOnChip(event, targetDocId) {
 
   srcDoc.module = tgtDoc.module;
   srcDoc.weekLabel = normalizeWeekLabelOneLine(tgtDoc.weekLabel);
-  srcDoc.taskText = stripModuleBracketsFromText(tgtDoc.taskText || '', tgtDoc.module);
+  srcDoc.taskText = stripModuleBracketsFromText(tgtDoc.taskText ? tgtDoc.taskText : '', tgtDoc.module);
   srcDoc.taskHash = srcDoc.taskText ? computeTaskHash(srcDoc.module, srcDoc.weekLabel, srcDoc.taskText) : '';
   srcDoc.manualOverride = true;
   srcDoc.needsDriveUpdate = true;
@@ -295,7 +584,7 @@ async function handleDocChipDropOnChip(event, targetDocId) {
 function buildSingleDocChipHtml(doc, contextKey = 'chip') {
   const catMeta = getCategoryMeta(doc.category);
   const menuId = `docChipMenu_${contextKey}_${doc.id.replace(/[^a-zA-Z0-9_]/g, '')}`;
-  const displayTitle = doc.title || doc.fileName || 'Dokument';
+  const displayTitle = doc.title ? doc.title : (doc.fileName ? doc.fileName : 'Dokument');
 
   return `
     <div class="task-doc-chip-group ${catMeta.chipClass}"
@@ -308,7 +597,7 @@ function buildSingleDocChipHtml(doc, contextKey = 'chip') {
       <button type="button"
               class="task-doc-chip"
               onclick="event.stopPropagation(); event.preventDefault(); previewModuleDoc('${escapeAttr(doc.id)}');"
-              title="${escapeAttr(displayTitle)} (${escapeAttr(doc.category || 'Vorlesung')}) – Klicken für Vorschau">
+              title="${escapeAttr(displayTitle)} (${escapeAttr(doc.category ? doc.category : 'Vorlesung')}) – Klicken für Vorschau">
         <span>${catMeta.icon}</span>
         <span class="task-doc-chip-title">${escapeHtml(displayTitle)}</span>
       </button>
@@ -401,20 +690,20 @@ function renderGeneralModuleDocsCellHtml(shortName) {
    ========================================================= */
 function handleDocDragStart(event, docId) {
   event.stopPropagation();
-  draggedTaskInfo = null;
+  if (typeof draggedTaskInfo !== 'undefined') draggedTaskInfo = null;
   draggedDocFolderGroup = null;
   draggedDocId = docId;
   docDropOccurred = false;
   lastDraggedDocIdForClickFallback = docId;
   lastDocDragStartTime = Date.now();
-  lastDocDragStartCoords = { x: event.clientX || 0, y: event.clientY || 0 };
+  lastDocDragStartCoords = { x: event.clientX ? event.clientX : 0, y: event.clientY ? event.clientY : 0 };
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('text/plain', `DOC:${docId}`);
 }
 
 function handleDocFolderDragStart(event, docIdsJson) {
   event.stopPropagation();
-  draggedTaskInfo = null;
+  if (typeof draggedTaskInfo !== 'undefined') draggedTaskInfo = null;
   draggedDocId = null;
   docDropOccurred = false;
   lastDraggedDocIdForClickFallback = null;
@@ -429,8 +718,10 @@ function handleDocFolderDragStart(event, docIdsJson) {
 
 function handleDocDragEnd(event) {
   const elapsed = Date.now() - lastDocDragStartTime;
-  const dx = Math.abs((event?.clientX || 0) - lastDocDragStartCoords.x);
-  const dy = Math.abs((event?.clientY || 0) - lastDocDragStartCoords.y);
+  const cx = (event && event.clientX) ? event.clientX : 0;
+  const cy = (event && event.clientY) ? event.clientY : 0;
+  const dx = Math.abs(cx - lastDocDragStartCoords.x);
+  const dy = Math.abs(cy - lastDocDragStartCoords.y);
   const fallbackDocId = lastDraggedDocIdForClickFallback;
 
   draggedDocId = null;
@@ -442,9 +733,7 @@ function handleDocDragEnd(event) {
     el.classList.remove('drag-over-cell', 'drag-over-item', 'doc-drop-target', 'doc-chip-reorder-target');
   });
 
-  // Falls der Nutzer eigentlich nur geklickt hat (kurzer Klick < 260ms & kaum Bewegung < 10px),
-  // der Browser daraus aber wegen draggable="true" ein Drag-Event gemacht hat -> Vorschau öffnen!
-  if (!docDropOccurred && fallbackDocId && elapsed < 260 && dx < 10 && dy < 10) {
+  if (!docDropOccurred && fallbackDocId && elapsed < 280 && dx < 12 && dy < 12) {
     previewModuleDoc(fallbackDocId);
   }
 }
@@ -497,7 +786,7 @@ async function assignDocToTaskByDragDrop(docIdOrIds, targetWeekIdx, targetMod, t
 
 async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetWeekLabel = '', targetTaskText = '') {
   docDropOccurred = true;
-  const files = Array.from(filesList || []);
+  const files = Array.from(filesList ? filesList : []);
   if (files.length === 0) return;
   startCancelableOperation(`Speichere ${files.length} gezogene Datei(en) in ${targetMod}...`);
   try {
@@ -506,8 +795,8 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
       if (isCurrentActionCancelled()) break;
       const memBlob = await normalizeToMemoryBlob(file, file.name, file.type);
       const guess = analyzeFileForSmartSorting(file.name, targetMod, '', targetWeekLabel, targetTaskText, true);
-      const finalWeek = normalizeWeekLabelOneLine(targetWeekLabel || guess.weekLabel);
-      const finalTask = stripModuleBracketsFromText(targetTaskText || guess.taskText || '', targetMod);
+      const finalWeek = normalizeWeekLabelOneLine(targetWeekLabel ? targetWeekLabel : guess.weekLabel);
+      const finalTask = stripModuleBracketsFromText(targetTaskText ? targetTaskText : (guess.taskText ? guess.taskText : ''), targetMod);
       const nextOrd = getNextSortOrderInScope(targetMod, finalWeek, finalTask);
       const originalBaseName = file.name.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
 
@@ -521,7 +810,7 @@ async function handleDirectExternalFilesDropInCell(filesList, targetMod, targetW
         title: originalBaseName,
         fileName: file.name,
         mimeType: inferMimeTypeFromFileName(file.name, file.type),
-        sizeBytes: memBlob ? memBlob.size : (file.size || 0),
+        sizeBytes: memBlob ? memBlob.size : (file.size ? file.size : 0),
         hasLocalFile: true,
         manualOverride: true,
         needsDriveUpdate: true,
@@ -557,14 +846,14 @@ async function handleGeneralCellDrop(event, targetMod) {
 
   const rawData = event.dataTransfer?.getData('text/plain') || '';
   if (draggedDocFolderGroup || rawData.startsWith('DOCFOLDER:')) {
-    const ids = draggedDocFolderGroup || JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
+    const ids = draggedDocFolderGroup ? draggedDocFolderGroup : JSON.parse(rawData.replace('DOCFOLDER:', '') || '[]');
     draggedDocFolderGroup = null;
     await assignDocIdsToTarget(ids, targetMod, '', '');
     showToast(`📂 Ordner (${ids.length} Dateien) in ${targetMod} (Allgemein) abgelegt!`);
     return;
   }
   if (draggedDocId || rawData.startsWith('DOC:')) {
-    const docId = draggedDocId || rawData.replace('DOC:', '');
+    const docId = draggedDocId ? draggedDocId : rawData.replace('DOC:', '');
     draggedDocId = null;
     await assignDocIdsToTarget([docId], targetMod, '', '');
     showToast(`📌 Dokument in ${targetMod} (Allgemein) abgelegt!`);
@@ -586,7 +875,7 @@ async function sanitizeAndDeduplicateDocsSilent() {
   await refreshDocsCache();
   const seenKeys = new Set();
   for (const doc of [...cachedDocsList]) {
-    const key = `${doc.module}|${(doc.fileName || '').toLowerCase()}|${doc.sizeBytes || 0}|${doc.taskHash || ''}`;
+    const key = [doc.module, (doc.fileName ? doc.fileName : '').toLowerCase(), doc.sizeBytes ? doc.sizeBytes : 0, doc.taskHash ? doc.taskHash : ''].join('::');
     if (seenKeys.has(key)) {
       await deleteDocRecordFromDB(doc.id, false);
     } else {
@@ -618,7 +907,7 @@ function renderModuleDocsView() {
     const groupsMap = new Map();
     for (const d of modDocs) {
       const wk = normalizeWeekLabelOneLine(d.weekLabel);
-      const tsk = stripModuleBracketsFromText(d.taskText || '', mod.shortName);
+      const tsk = stripModuleBracketsFromText(d.taskText ? d.taskText : '', mod.shortName);
       const groupKey = !wk ? '__GENERAL__' : (tsk ? `${wk}:::${tsk}` : `${wk}:::__WEEK_ONLY__`);
       if (!groupsMap.has(groupKey)) {
         groupsMap.set(groupKey, {
@@ -659,9 +948,9 @@ function renderModuleDocsView() {
                  ondragleave="handleDocChipDragLeave(event)"
                  ondrop="handleDocChipDropOnChip(event, '${escapeAttr(doc.id)}')">
               <div class="doc-item-info" onclick="event.stopPropagation(); previewModuleDoc('${escapeAttr(doc.id)}');" title="Klicken für Vorschau">
-                <div class="doc-item-title">${catMeta.icon} ${escapeHtml(doc.title || doc.fileName)}</div>
+                <div class="doc-item-title">${catMeta.icon} ${escapeHtml(doc.title ? doc.title : doc.fileName)}</div>
                 <div class="doc-item-meta">
-                  <span class="doc-cat-badge ${badgeClass}">${escapeHtml(doc.category || 'Vorlesung')}</span>
+                  <span class="doc-cat-badge ${badgeClass}">${escapeHtml(doc.category ? doc.category : 'Vorlesung')}</span>
                   ${doc.sizeBytes ? `<span>• ${formatFileSize(doc.sizeBytes)}</span>` : ''}
                   ${doc.driveFileId ? `<span>• ☁️ Drive</span>` : ''}
                 </div>
@@ -732,9 +1021,24 @@ function renderModuleDocsView() {
 }
 
 /* =========================================================
-   8. UPLOAD-DIALOG MIT SICHEREM SPEICHER-BLOB & NAMENSVERGABE
+   8. UPLOAD-DIALOG MIT SELBSTHEILENDEM NAMENSFELD BEI KATEGORIE
    ========================================================= */
+function ensureCustomTitleFieldInUploadModal() {
+  if (document.getElementById('docCustomTitleInput')) return;
+  const catSel = document.getElementById('docCategorySelect');
+  if (!catSel || !catSel.parentElement || !catSel.parentElement.parentElement) return;
+  const formGrid = catSel.parentElement.parentElement;
+  const groupDiv = document.createElement('div');
+  groupDiv.className = 'form-group';
+  groupDiv.innerHTML = `
+    <label for="docCustomTitleInput">Neuer Dokumentenname (optional)</label>
+    <input type="text" id="docCustomTitleInput" class="full-width" placeholder="Leer = Original-Dateiname behalten" oninput="onUploadCustomTitlePreselectionChanged(this.value)">
+  `;
+  catSel.parentElement.insertAdjacentElement('afterend', groupDiv);
+}
+
 function populateUploadDocModalDropdowns(preMod = '', preCat = 'Vorlesung', preWeek = '') {
+  ensureCustomTitleFieldInUploadModal();
   const modSel = document.getElementById('docModuleSelect');
   const catSel = document.getElementById('docCategorySelect');
   const wkSel = document.getElementById('docWeekSelect');
@@ -775,7 +1079,7 @@ function openUploadDocModal(preMod = '', preCat = 'Vorlesung', preWeek = '', pre
 }
 
 function onUploadCustomTitlePreselectionChanged(rawVal) {
-  const customTitle = String(rawVal || '').trim();
+  const customTitle = String(rawVal ? rawVal : '').trim();
   if (pendingUploadQueue.length === 0) return;
 
   pendingUploadQueue.forEach((item, idx) => {
@@ -849,9 +1153,9 @@ function handleUploadDropZoneDrop(event) {
   }
 }
 
-/* Liest ausgewählte Dateien sofort als echte Speicher-Blobs ein, bevor das Input-Feld geleert wird! */
 async function handleDocFilesSelected(fileList) {
-  const files = Array.from(fileList || []);
+  const rawList = fileList ? fileList : document.getElementById('docFileInput')?.files;
+  const files = Array.from(rawList ? rawList : []);
   if (files.length === 0) return;
 
   const defaultMod = document.getElementById('docModuleSelect')?.value || 'ModSim';
@@ -877,7 +1181,7 @@ async function handleDocFilesSelected(fileList) {
       file: memoryBlob,
       fileName: file.name,
       mimeType: inferMimeTypeFromFileName(file.name, file.type),
-      sizeBytes: memoryBlob ? memoryBlob.size : (file.size || 0),
+      sizeBytes: memoryBlob ? memoryBlob.size : (file.size ? file.size : 0),
       module: guess.module,
       category: guess.category,
       weekLabel: guess.weekLabel,
@@ -897,7 +1201,7 @@ function buildTasksOptionsForModAndWeek(modName, weekLabelOneLine, selectedTask 
   const normWk = normalizeWeekLabelOneLine(weekLabelOneLine);
   const weekObj = (appState?.weeks || []).find(w => isSameWeekLabelOrId(normWk, w));
   const tasks = weekObj ? (weekObj.cells[modName] || []) : [];
-  const cleanSel = stripModuleBracketsFromText(selectedTask || '', modName);
+  const cleanSel = stripModuleBracketsFromText(selectedTask ? selectedTask : '', modName);
   let html = `<option value="">– Ohne spezifische Aufgabe (Wochen-/Modul-Ordner) –</option>`;
   let matchedAny = false;
   for (const t of tasks) {
@@ -1066,11 +1370,11 @@ async function handleSaveUploadedDocs() {
       if (isCurrentActionCancelled()) break;
       const item = pendingUploadQueue[i];
       const cleanWeek = normalizeWeekLabelOneLine(item.weekLabel);
-      const cleanTask = stripModuleBracketsFromText(item.taskText || '', item.module);
+      const cleanTask = stripModuleBracketsFromText(item.taskText ? item.taskText : '', item.module);
       const nextOrd = getNextSortOrderInScope(item.module, cleanWeek, cleanTask);
       const fallbackBaseName = item.fileName.replace(/\.[^/.]+$/, '').trim() || 'Dokument';
 
-      let finalTitle = (item.title || '').trim();
+      let finalTitle = (item.title ? item.title : '').trim();
       if (!finalTitle && topCustomTitle) {
         finalTitle = pendingUploadQueue.length > 1 ? `${topCustomTitle} (${i + 1})` : topCustomTitle;
       }
@@ -1088,7 +1392,7 @@ async function handleSaveUploadedDocs() {
         title: finalTitle,
         fileName: item.fileName,
         mimeType: inferMimeTypeFromFileName(item.fileName, item.mimeType),
-        sizeBytes: item.sizeBytes || 0,
+        sizeBytes: item.sizeBytes ? item.sizeBytes : 0,
         hasLocalFile: true,
         manualOverride: true,
         needsDriveUpdate: true,
@@ -1185,17 +1489,17 @@ function openEditDocModal(docId, event) {
   ensureEditDocModalExists();
 
   document.getElementById('editDocIdInput').value = doc.id;
-  document.getElementById('editDocTitleInput').value = doc.title || doc.fileName?.replace(/\.[^/.]+$/, '') || '';
+  document.getElementById('editDocTitleInput').value = doc.title ? doc.title : (doc.fileName ? doc.fileName.replace(/\.[^/.]+$/, '') : '');
   const noteEl = document.getElementById('editDocOriginalFileNote');
   if (noteEl) {
-    noteEl.textContent = `Originaldatei: ${doc.fileName || 'Unbekannt'}`;
+    noteEl.textContent = `Originaldatei: ${doc.fileName ? doc.fileName : 'Unbekannt'}`;
   }
 
   const modSel = document.getElementById('editDocModuleSelect');
   modSel.innerHTML = (appState?.modules || []).map(m =>
     `<option value="${escapeAttr(m.shortName)}">${escapeHtml(m.shortName)} – ${escapeHtml(m.fullName)}</option>`
   ).join('');
-  modSel.value = doc.module || appState.modules[0].shortName;
+  modSel.value = doc.module ? doc.module : appState.modules[0].shortName;
 
   const catSel = document.getElementById('editDocCategorySelect');
   catSel.innerHTML = DOC_CATEGORIES.map(c =>
@@ -1213,7 +1517,7 @@ function openEditDocModal(docId, event) {
   wkSel.value = normDocWk;
 
   const taskSel = document.getElementById('editDocTaskSelect');
-  taskSel.innerHTML = buildTasksOptionsForModAndWeek(modSel.value, normDocWk, stripModuleBracketsFromText(doc.taskText || '', modSel.value));
+  taskSel.innerHTML = buildTasksOptionsForModAndWeek(modSel.value, normDocWk, stripModuleBracketsFromText(doc.taskText ? doc.taskText : '', modSel.value));
 
   openModal('editDocModal');
 }
@@ -1243,14 +1547,14 @@ async function saveEditedDoc() {
   const scopeChanged =
     doc.module !== newMod ||
     normalizeWeekLabelOneLine(doc.weekLabel) !== newWeek ||
-    normalizeTaskTextForMatch(doc.taskText || '', doc.module) !== normalizeTaskTextForMatch(newTask, newMod);
+    normalizeTaskTextForMatch(doc.taskText ? doc.taskText : '', doc.module) !== normalizeTaskTextForMatch(newTask, newMod);
 
   doc.module = newMod;
   doc.category = newCat;
   doc.weekLabel = newWeek;
   doc.taskText = newTask;
   doc.taskHash = newTask ? computeTaskHash(newMod, newWeek, newTask) : '';
-  doc.title = newTitle || doc.fileName?.replace(/\.[^/.]+$/, '') || 'Dokument';
+  doc.title = newTitle ? newTitle : (doc.fileName ? doc.fileName.replace(/\.[^/.]+$/, '') : 'Dokument');
   if (scopeChanged) {
     doc.sortOrder = getNextSortOrderInScope(newMod, newWeek, newTask);
   }
@@ -1277,9 +1581,31 @@ async function deleteDocFromEditModal() {
 }
 
 /* =========================================================
-   10. REPARIERTE, SOFORT ÖFFNENDE DOKUMENT-VORSCHAU
-       (KOMPATIBEL MIT LOKALEN BLOBS, DATA-URLS & GOOGLE DRIVE)
+   10. SELBSTHEILENDE DOKUMENT-VORSCHAU
+       (ERZEUGT DAS VORSCHAU-MODAL AUTOMATISCH, FALLS ES IM HTML FEHLT!)
    ========================================================= */
+function ensurePreviewDocModalExists() {
+  if (document.getElementById('docPreviewModal')) return;
+  const modalHtml = `
+    <div class="modal-backdrop" id="docPreviewModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 id="docPreviewTitle">📄 Dokument-Vorschau</h3>
+          <button type="button" class="modal-close" onclick="closePreviewModal()">&times;</button>
+        </div>
+        <div class="modal-body doc-preview-modal-body" id="docPreviewBody"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline btn-sm" id="docPreviewEditBtn" style="margin-right:auto;">✏️ Bearbeiten</button>
+          <a id="docPreviewNewTabBtn" class="btn btn-outline btn-sm" target="_blank" rel="noopener">🔍 Vollbild / Neuer Tab</a>
+          <a id="docPreviewDownloadBtn" class="btn btn-primary btn-sm" download>⬇️ Download</a>
+          <button type="button" class="btn btn-outline btn-sm" onclick="closePreviewModal()">Schließen</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
 function closePreviewModal() {
   closeModal('docPreviewModal');
   const body = document.getElementById('docPreviewBody');
@@ -1292,6 +1618,8 @@ function closePreviewModal() {
 
 async function previewModuleDoc(docId) {
   closeAllDocActionMenus();
+  ensurePreviewDocModalExists();
+
   let doc = cachedDocsList.find(d => d.id === docId);
   if (!doc) {
     await refreshDocsCache();
@@ -1309,10 +1637,9 @@ async function previewModuleDoc(docId) {
   let editBtn = document.getElementById('docPreviewEditBtn');
 
   if (titleEl) {
-    titleEl.textContent = `📄 ${doc.title || doc.fileName} (${doc.module} – ${doc.category || 'Vorlesung'})`;
+    titleEl.textContent = `📄 ${doc.title ? doc.title : doc.fileName} (${doc.module} – ${doc.category ? doc.category : 'Vorlesung'})`;
   }
 
-  // Überschreibe alte Inline-Flex-Styles auf #docPreviewBody, damit das PDF immer 100% Breite hat!
   if (bodyEl) {
     bodyEl.style.display = 'flex';
     bodyEl.style.flexDirection = 'column';
@@ -1322,19 +1649,11 @@ async function previewModuleDoc(docId) {
     bodyEl.innerHTML = `
       <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:55vh; gap:12px;">
         <div class="spinner-ring"></div>
-        <span style="font-weight:600; color:var(--text-muted);">Lade Vorschau für „${escapeHtml(doc.title || doc.fileName)}“...</span>
+        <span style="font-weight:600; color:var(--text-muted);">Lade Vorschau für „${escapeHtml(doc.title ? doc.title : doc.fileName)}“...</span>
       </div>
     `;
   }
 
-  if (!editBtn && dlBtn && dlBtn.parentElement) {
-    editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.id = 'docPreviewEditBtn';
-    editBtn.className = 'btn btn-outline btn-sm';
-    editBtn.style.marginRight = 'auto';
-    dlBtn.parentElement.insertBefore(editBtn, dlBtn.parentElement.firstChild);
-  }
   if (editBtn) {
     editBtn.textContent = '✏️ Bearbeiten';
     editBtn.onclick = (ev) => {
@@ -1343,7 +1662,6 @@ async function previewModuleDoc(docId) {
     };
   }
 
-  // Öffne das Modal sofort, damit jeder Klick unmittelbares Feedback gibt
   openModal('docPreviewModal');
 
   if (activePreviewObjectUrl) {
@@ -1351,23 +1669,20 @@ async function previewModuleDoc(docId) {
     activePreviewObjectUrl = null;
   }
 
-  // 1. Versuche lokalen Blob aus IndexedDB zu laden
   let blob = await getDocBlobFromDB(doc.id);
 
-  // 2. Falls noch nicht lokal vorhanden und mit Google Drive verknüpft -> von Drive nachladen
   if ((!blob || blob.size === 0) && doc.driveFileId && typeof ensureDriveDocContentLoaded === 'function') {
     try {
       blob = await ensureDriveDocContentLoaded(doc);
     } catch (e) {
-      console.warn('Drive-Download für Vorschau nicht möglich, nutze Drive-Embed:', e);
+      console.warn('Drive-Download für Vorschau Hinweis:', e);
     }
   }
 
-  // 3. Falls kein lokaler Blob vorliegt, aber eine Google-Drive-Datei-ID existiert -> direkt Google-Drive-Preview einbetten!
   if (!blob || blob.size === 0) {
     if (doc.driveFileId) {
       const driveEmbedUrl = `https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/preview`;
-      const driveViewUrl = doc.webViewLink || `https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/view`;
+      const driveViewUrl = doc.webViewLink ? doc.webViewLink : `https://drive.google.com/file/d/${encodeURIComponent(doc.driveFileId)}/view`;
       if (newTabBtn) {
         newTabBtn.href = driveViewUrl;
         newTabBtn.style.display = 'inline-flex';
@@ -1407,15 +1722,14 @@ async function previewModuleDoc(docId) {
     return;
   }
 
-  // 4. Lokaler Blob vorhanden -> korrekten MIME-Typ erzwingen (wichtig für PDF-Viewer!)
-  const effectiveMime = inferMimeTypeFromFileName(doc.fileName || doc.title, doc.mimeType || blob.type);
+  const effectiveMime = inferMimeTypeFromFileName(doc.fileName ? doc.fileName : doc.title, doc.mimeType ? doc.mimeType : blob.type);
   const typedBlob = (blob.type === effectiveMime) ? blob : new Blob([blob], { type: effectiveMime });
   activePreviewObjectUrl = URL.createObjectURL(typedBlob);
 
   if (dlBtn) {
     dlBtn.href = activePreviewObjectUrl;
     dlBtn.target = '_self';
-    dlBtn.download = doc.fileName || `${doc.title || 'Dokument'}.pdf`;
+    dlBtn.download = doc.fileName ? doc.fileName : `${doc.title ? doc.title : 'Dokument'}.pdf`;
   }
   if (newTabBtn) {
     newTabBtn.href = activePreviewObjectUrl;
@@ -1424,7 +1738,7 @@ async function previewModuleDoc(docId) {
 
   const topActionBar = `
     <div class="doc-preview-mobile-bar" style="width:100%; margin-bottom:8px;">
-      <span>📄 <strong>${escapeHtml(doc.fileName || doc.title)}</strong> (${formatFileSize(typedBlob.size)})</span>
+      <span>📄 <strong>${escapeHtml(doc.title ? doc.title : doc.fileName)}</strong> (${formatFileSize(typedBlob.size)})</span>
       <a href="${activePreviewObjectUrl}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 Vollbild / Neuer Tab</a>
     </div>
   `;
@@ -1446,7 +1760,7 @@ async function previewModuleDoc(docId) {
       ${topActionBar}
       <div style="text-align:center; padding:40px 20px; background:var(--card-bg); border-radius:8px; border:1px solid var(--primary-border);">
         <p style="font-size:3rem; margin-bottom:10px;">📦</p>
-        <h4>${escapeHtml(doc.title || doc.fileName)}</h4>
+        <h4>${escapeHtml(doc.title ? doc.title : doc.fileName)}</h4>
         <p style="color:var(--text-muted); margin-top:6px;">Dateityp: ${escapeHtml(effectiveMime)} (${formatFileSize(typedBlob.size)})</p>
         <p style="margin-top:12px;">Klicke unten auf <strong>„⬇️ Download“</strong>, um diese Datei zu öffnen.</p>
       </div>
@@ -1475,7 +1789,7 @@ async function downloadModuleDoc(docId) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = doc.fileName || `${doc.title || 'Dokument'}.pdf`;
+  a.download = doc.fileName ? doc.fileName : `${doc.title ? doc.title : 'Dokument'}.pdf`;
   document.body.appendChild(a);
   a.click();
   a.remove();
