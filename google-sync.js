@@ -869,7 +869,7 @@ async function sendBriefingViaGmailAPI(silent = false) {
       }
     }
     return false;
-  } finally {
+  } finally {11
     if (!silent) hideLoading();
   }
 }
