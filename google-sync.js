@@ -1,14 +1,13 @@
 /* =========================================================
    UNTERPROGRAMM 8: DIREKTE GOOGLE REST-API SYNCHRONISATION
-   INKL. LÖSCH-GEDÄCHTNIS (KEIN WIEDERAUFTAUCHEN GELÖSCHTER
-   AUFGABEN AUS TASKS ODER KALENDER) (google-sync.js)
+   INKL. LÖSCH-GEDÄCHTNIS & OHNE POPUP-BLOCKER-FEHLER (google-sync.js)
    ========================================================= */
-const DEFAULT_GOOGLE_CLIENT_ID = '420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com';
-const TOKEN_STORAGE_KEY = 'semesterplan_google_access_token';
-const TOKEN_EXPIRY_KEY = 'semesterplan_google_token_expiry';
-const USER_EMAIL_STORAGE_KEY = 'semesterplan_google_user_email';
+var DEFAULT_GOOGLE_CLIENT_ID = '420474206009-2n88gvthkgdj84o34416a6j75dbul650.apps.googleusercontent.com';
+var TOKEN_STORAGE_KEY = 'semesterplan_google_access_token';
+var TOKEN_EXPIRY_KEY = 'semesterplan_google_token_expiry';
+var USER_EMAIL_STORAGE_KEY = 'semesterplan_google_user_email';
 
-const GOOGLE_SCOPES = [
+var GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.send',
@@ -17,11 +16,11 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email'
 ].join(' ');
 
-let googleAccessToken = null;
-let tokenClient = null;
-let cachedListMap = {};
-let autoSyncInterval = null;
-let isSyncInProgress = false;
+var googleAccessToken = null;
+var tokenClient = null;
+var cachedListMap = {};
+var autoSyncInterval = null;
+var isSyncInProgress = false;
 
 function getConfiguredClientId() {
   const stored = localStorage.getItem('semesterplan_google_client_id');
@@ -36,7 +35,7 @@ function getRememberedUserEmail() {
 }
 
 function isGoogleConnected() {
-  return !!googleAccessToken;
+  return Boolean(googleAccessToken);
 }
 
 function updateGoogleConnectedUI(connected) {
@@ -104,14 +103,8 @@ function initGoogleSyncSettingsUI() {
       await checkAndSendWeeklyAutoEmail();
     }, 600);
   } else {
+    // Kein automatischer Popup-Aufruf beim Seitenstart (verhindert den GSI_LOGGER Popup-Blocker-Fehler!)
     updateGoogleConnectedUI(false);
-    if (getRememberedUserEmail()) {
-      setTimeout(() => {
-        if (!isGoogleConnected() && typeof google !== 'undefined') {
-          trySilentTokenRestore();
-        }
-      }, 1200);
-    }
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -184,11 +177,11 @@ function initGoogleAuth() {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: GOOGLE_SCOPES,
-    hint: rememberedEmail || undefined,
+    hint: rememberedEmail ? rememberedEmail : undefined,
     callback: async (tokenResponse) => {
       if (tokenResponse && tokenResponse.access_token) {
         googleAccessToken = tokenResponse.access_token;
-        const expiresInSec = parseInt(tokenResponse.expires_in || '3599', 10);
+        const expiresInSec = parseInt(tokenResponse.expires_in ? tokenResponse.expires_in : '3599', 10);
         localStorage.setItem(TOKEN_STORAGE_KEY, googleAccessToken);
         localStorage.setItem(TOKEN_EXPIRY_KEY, String(Date.now() + (expiresInSec - 60) * 1000));
         await fetchAndRememberGoogleUserProfile();
@@ -205,21 +198,12 @@ function initGoogleAuth() {
   return true;
 }
 
-function trySilentTokenRestore() {
-  if (!initGoogleAuth()) return;
-  const rememberedEmail = getRememberedUserEmail();
-  tokenClient.requestAccessToken({
-    prompt: 'none',
-    login_hint: rememberedEmail || undefined
-  });
-}
-
 function connectGoogleLive() {
   if (!initGoogleAuth()) return;
   const rememberedEmail = getRememberedUserEmail();
   tokenClient.requestAccessToken({
     prompt: '',
-    login_hint: rememberedEmail || undefined
+    login_hint: rememberedEmail ? rememberedEmail : undefined
   });
 }
 
@@ -232,7 +216,7 @@ async function googleApiFetch(url, options = {}) {
   }
   const headers = {
     'Authorization': `Bearer ${googleAccessToken}`,
-    ...(options.headers || {})
+    ...(options.headers ? options.headers : {})
   };
   if (!headers['Content-Type'] && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
@@ -285,7 +269,7 @@ async function ensureModuleTaskLists(forceRefresh = false) {
     return cachedListMap;
   }
   const listsData = await googleApiFetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100');
-  const existingLists = (listsData && listsData.items) || [];
+  const existingLists = (listsData && listsData.items) ? listsData.items : [];
   const listMap = {};
   existingLists.forEach(l => {
     const cleanTitle = l.title.trim().replace(/^\[|\]$/g, '');
@@ -343,7 +327,7 @@ function buildCleanGoogleTitle(shortName, rawText) {
 function isLegacyWeekHeaderTask(gTask, shortName) {
   if (!gTask) return false;
   if (gTask.notes && gTask.notes.includes('WocheParent:')) return true;
-  const rawTitle = (gTask.title || '').trim();
+  const rawTitle = (gTask.title ? gTask.title : '').trim();
   const cleanTitle = stripAllEmojisAndBrackets(rawTitle);
   if (/^([a-z0-9äöüß\s]+:?\s*)?woche\s*(\d+|zusatz)/i.test(cleanTitle)) return true;
   if (cleanTitle.toLowerCase() === shortName.toLowerCase() && gTask.notes && gTask.notes.includes('Oberaufgabe')) return true;
@@ -476,14 +460,12 @@ async function syncWithGoogleTasksAPI(silent = false) {
   isSyncInProgress = true;
   if (!silent) startCancelableOperation('Synchronisiere Aufgaben mit Google Tasks & Kalender...');
   try {
-    // 0. Zuerst Drive-Snapshot synchronisieren, damit aktuelle Lösch-Tombstones & Dokument-Zuordnungen vorliegen
     if (!isCurrentActionCancelled() && typeof syncDocumentsWithGoogleDrive === 'function') {
       await syncDocumentsWithGoogleDrive(true);
     }
 
     const listMap = await ensureModuleTaskLists(true);
 
-    // 1. Vorgemerkte gelöschte Google-Tasks endgültig löschen
     if (Array.isArray(appState.deletedGoogleTaskIds) && appState.deletedGoogleTaskIds.length > 0) {
       for (const delEntry of appState.deletedGoogleTaskIds) {
         if (isCurrentActionCancelled()) break;
@@ -499,7 +481,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
       appState.deletedGoogleTaskIds = [];
     }
 
-    // 2. Vorgemerkte gelöschte Google-Kalender-Events endgültig löschen
     if (Array.isArray(appState.deletedGoogleEventIds) && appState.deletedGoogleEventIds.length > 0) {
       for (const evId of appState.deletedGoogleEventIds) {
         if (isCurrentActionCancelled()) break;
@@ -521,7 +502,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
       if (isCurrentActionCancelled()) break;
 
       const deletedTaskIds = new Set(allRawTasks.filter(t => t.deleted).map(t => t.id));
-      let activeGoogleTasks = allRawTasks.filter(t => !t.deleted && (t.title || '').trim() !== '');
+      let activeGoogleTasks = allRawTasks.filter(t => !t.deleted && (t.title ? t.title : '').trim() !== '');
 
       const legacyParentIds = new Set();
       for (const gTask of activeGoogleTasks) {
@@ -552,10 +533,9 @@ async function syncWithGoogleTasksAPI(silent = false) {
         activeGoogleTasks = activeGoogleTasks.filter(t => !legacyParentIds.has(t.id));
       }
 
-      // Wenn eine Aufgabe direkt in der Google-Tasks-App gelöscht wurde, auch lokal als Tombstone vermerken!
       for (const week of appState.weeks) {
         if (week.googleParentTaskIds) delete week.googleParentTaskIds[listId];
-        const items = week.cells[shortName] || [];
+        const items = week.cells[shortName] ? week.cells[shortName] : [];
         week.cells[shortName] = items.filter(item => {
           if (item.googleTaskId && deletedTaskIds.has(item.googleTaskId)) {
             registerTaskTombstone(shortName, week.id, item.text);
@@ -571,7 +551,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
         const week = appState.weeks[wIdx];
         const parsed = parseWeekDates(week.weekLabel);
         const sundayStr = parsed ? formatDateDE(parsed.weekSun) : '';
-        const items = week.cells[shortName] || [];
+        const items = week.cells[shortName] ? week.cells[shortName] : [];
         if (items.length === 0) continue;
 
         for (const item of items) {
@@ -630,7 +610,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
               matchedTask.title !== expectedCleanTitle ||
               currentDueDay !== desiredDueDay ||
               (matchedTask.status === 'completed') !== item.done ||
-              !(matchedTask.notes || '').includes(`WocheID:${week.id}`);
+              !(matchedTask.notes ? matchedTask.notes : '').includes(`WocheID:${week.id}`);
             if (needsPatch) {
               await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${matchedTask.id}`, {
                 method: 'PATCH',
@@ -647,13 +627,11 @@ async function syncWithGoogleTasksAPI(silent = false) {
         }
       }
 
-      // Prüfe verbleibende Google Tasks:
-      // Wenn sie in unseren Tombstones (gelöschten Aufgaben) stehen -> NICHT re-importieren, sondern auch auf Google löschen!
       for (const gTask of activeGoogleTasks) {
         if (isCurrentActionCancelled()) break;
         if (matchedGoogleTaskIds.has(gTask.id)) continue;
         if (isLegacyWeekHeaderTask(gTask, shortName)) continue;
-        const cleanTaskText = extractCleanTaskDescription(shortName, gTask.title || '');
+        const cleanTaskText = extractCleanTaskDescription(shortName, gTask.title ? gTask.title : '');
         if (!cleanTaskText) continue;
 
         let targetWeekIdx = -1;
@@ -673,7 +651,6 @@ async function syncWithGoogleTasksAPI(silent = false) {
 
         const targetWeek = appState.weeks[targetWeekIdx];
 
-        // WICHTIG: Wurde diese Aufgabe vom Nutzer gelöscht (Tombstone)? Dann auf Google löschen statt re-importieren!
         if (isTaskTombstoned(shortName, targetWeek.id, cleanTaskText)) {
           try {
             await googleApiFetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${gTask.id}`, {
@@ -683,7 +660,7 @@ async function syncWithGoogleTasksAPI(silent = false) {
           continue;
         }
 
-        const existingInCell = targetWeek.cells[shortName] || [];
+        const existingInCell = targetWeek.cells[shortName] ? targetWeek.cells[shortName] : [];
         const duplicate = existingInCell.find(i => i.text.toLowerCase() === cleanTaskText.toLowerCase());
         if (!duplicate) {
           existingInCell.push({
@@ -733,7 +710,7 @@ async function forceFullResync() {
 async function createOrUpdateCalendarEvent(weekIdx, shortName, item) {
   if (!googleAccessToken || isCurrentActionCancelled()) return;
   try {
-    const startDate = item.dueDate || getWeekMondayDateString(weekIdx);
+    const startDate = item.dueDate ? item.dueDate : getWeekMondayDateString(weekIdx);
     const startObj = new Date(startDate + 'T00:00:00');
     const endObj = new Date(startObj.getTime() + 24 * 60 * 60 * 1000);
     const endDate = endObj.toISOString().slice(0, 10);
@@ -766,12 +743,12 @@ async function syncEventsFromGoogleCalendar() {
     const timeMax = new Date(2027, 2, 1).toISOString();
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&maxResults=250`;
     const calData = await googleApiFetch(url);
-    const events = (calData && calData.items) || [];
+    const events = (calData && calData.items) ? calData.items : [];
     let importedCount = 0;
 
     for (const ev of events) {
       if (isCurrentActionCancelled()) break;
-      const rawSummary = (ev.summary || '').trim();
+      const rawSummary = (ev.summary ? ev.summary : '').trim();
       if (!rawSummary) continue;
       let matchedMod = null;
       for (const mod of appState.modules) {
@@ -786,7 +763,7 @@ async function syncEventsFromGoogleCalendar() {
       }
       if (!matchedMod) continue;
 
-      const rawDateStr = ev.start?.date || (ev.start?.dateTime ? ev.start.dateTime.slice(0, 10) : null);
+      const rawDateStr = ev.start?.date ? ev.start.date : (ev.start?.dateTime ? ev.start.dateTime.slice(0, 10) : null);
       if (!rawDateStr) continue;
       const p = rawDateStr.split('-');
       const eventDate = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 12, 0, 0);
@@ -798,10 +775,8 @@ async function syncEventsFromGoogleCalendar() {
 
       const targetWeek = appState.weeks[weekIdx];
 
-      // WICHTIG: Falls diese Aufgabe bereits vom Nutzer gelöscht wurde (Tombstone),
-      // NICHT wieder aus dem Google Kalender importieren!
       if (isTaskTombstoned(matchedMod, targetWeek.id, cleanTitle)) {
-        if ((ev.description || '').includes('Semesterplan-Aufgabe')) {
+        if ((ev.description ? ev.description : '').includes('Semesterplan-Aufgabe')) {
           await deleteSingleCalendarEventFromGoogle(ev.id);
         }
         continue;
@@ -817,7 +792,7 @@ async function syncEventsFromGoogleCalendar() {
         } catch (e) {}
       }
 
-      const cellItems = targetWeek.cells[matchedMod] || [];
+      const cellItems = targetWeek.cells[matchedMod] ? targetWeek.cells[matchedMod] : [];
       const exists = cellItems.some(i =>
         i.googleEventId === ev.id || i.text.toLowerCase() === cleanTitle.toLowerCase()
       );

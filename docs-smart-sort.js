@@ -4,7 +4,10 @@
    ========================================================= */
 
 function getCategoryMeta(catValue) {
-  return DOC_CATEGORIES.find(c => c.value === catValue) || DOC_CATEGORIES[0];
+  if (typeof DOC_CATEGORIES !== 'undefined' && Array.isArray(DOC_CATEGORIES)) {
+    return DOC_CATEGORIES.find(c => c.value === catValue) || DOC_CATEGORIES[0];
+  }
+  return { value: catValue || 'Vorlesung', label: '📖 Vorlesung', icon: '📖', chipClass: '' };
 }
 
 function extractTaskTokens(text) {
@@ -68,7 +71,7 @@ function extractTopicKeywords(text) {
 }
 
 function doesTaskMatchCategory(taskText, category) {
-  const lower = String(taskText || '').toLowerCase();
+  const lower = String(taskText ? taskText : '').toLowerCase();
   if (category === 'Übung' || category === 'Lösungen') {
     return /(\büb\s*\d+|übung|aufgabensammlung)/i.test(lower);
   }
@@ -84,10 +87,9 @@ function doesTaskMatchCategory(taskText, category) {
   return true;
 }
 
-/* Dokumente übernehmen NICHT mehr den Aufgabennamen, sondern behalten ihren Dateinamen */
 function formatDocTitleForTask(taskText, category, fallbackFileName = '') {
-  const baseName = String(fallbackFileName || '').replace(/\.[^/.]+$/, '').trim();
-  return baseName || 'Dokument';
+  const baseName = String(fallbackFileName ? fallbackFileName : '').replace(/\.[^/.]+$/, '').trim();
+  return baseName ? baseName : 'Dokument';
 }
 
 function analyzeFileForSmartSorting(
@@ -98,11 +100,11 @@ function analyzeFileForSmartSorting(
   explicitTaskText = '',
   preferPreselection = true
 ) {
-  const rawName = String(fileName || '').replace(/\.[^/.]+$/, '').trim();
+  const rawName = String(fileName ? fileName : '').replace(/\.[^/.]+$/, '').trim();
   const lower = rawName.toLowerCase();
   const reasonParts = [];
 
-  let detectedMod = fallbackModule || (appState?.modules?.[0]?.shortName || 'ModSim');
+  let detectedMod = fallbackModule ? fallbackModule : ((appState && appState.modules && appState.modules[0]) ? appState.modules[0].shortName : 'ModSim');
   const explicitModRules = [
     { mod: 'ModSim',     rx: /\b(modsim|modellierung|simulation|fem\b|numpy|2-0\d|2-10|rwp|awp|quadratur)\b/i },
     { mod: 'Informatik', rx: /\b(info|informatik|le\s*0*\d+|programmierung|oop|verkettete|ringtausch)\b/i },
@@ -130,7 +132,7 @@ function analyzeFileForSmartSorting(
     reasonParts.push(`Modul: ${detectedMod}`);
   }
 
-  let detectedCat = fallbackCategory || 'Vorlesung';
+  let detectedCat = fallbackCategory ? fallbackCategory : 'Vorlesung';
   let filenameMatchedCat = null;
 
   if (/(lösung|loesung|musterlösung|solution|\blsg\b|\bsol\b)/i.test(lower)) {
@@ -163,7 +165,7 @@ function analyzeFileForSmartSorting(
   }
 
   let detectedWeekLabel = fallbackWeekLabel ? fallbackWeekLabel.replace(/\n/g, ' ') : '';
-  let detectedTaskText = explicitTaskText || '';
+  let detectedTaskText = explicitTaskText ? explicitTaskText : '';
 
   const isGeneralByDefault = (detectedCat === 'Formelsammlung' || detectedCat === 'Klausur / Zusammenfassung');
   const fileTokens = extractTaskTokens(rawName);
@@ -187,7 +189,7 @@ function analyzeFileForSmartSorting(
     }
   }
 
-  if (!detectedTaskText && appState?.weeks) {
+  if (!detectedTaskText && appState && Array.isArray(appState.weeks)) {
     let bestCandidate = null;
     let bestScore = 0;
 
@@ -196,7 +198,7 @@ function analyzeFileForSmartSorting(
       : appState.weeks;
 
     for (const week of weeksToScan) {
-      const cellTasks = week.cells[detectedMod] || [];
+      const cellTasks = (week.cells && week.cells[detectedMod]) ? week.cells[detectedMod] : [];
       for (const item of cellTasks) {
         const cleanTxt = stripModuleBracketsFromText(item.text, detectedMod);
         const itemTokens = extractTaskTokens(cleanTxt);
@@ -254,14 +256,14 @@ function analyzeFileForSmartSorting(
     }
   }
 
-  if (!detectedWeekLabel && !isGeneralByDefault && appState?.weeks) {
+  if (!detectedWeekLabel && !isGeneralByDefault && appState && Array.isArray(appState.weeks)) {
     const wkMatch = rawName.match(/(?:woche|week|kw)\s*0*(\d{1,2})/i);
     if (wkMatch) {
       const wkNum = parseInt(wkMatch[1], 10);
       if (wkNum >= 1 && wkNum <= appState.weeks.length) {
         const wkObj = appState.weeks[wkNum - 1];
         detectedWeekLabel = wkObj.weekLabel.replace(/\n/g, ' ');
-        const tasksInWk = wkObj.cells[detectedMod] || [];
+        const tasksInWk = (wkObj.cells && wkObj.cells[detectedMod]) ? wkObj.cells[detectedMod] : [];
         const catMatchingTask = tasksInWk.find(t => doesTaskMatchCategory(t.text, detectedCat));
         if (catMatchingTask) {
           detectedTaskText = stripModuleBracketsFromText(catMatchingTask.text, detectedMod);
@@ -283,7 +285,7 @@ function analyzeFileForSmartSorting(
     category: detectedCat,
     weekLabel: detectedWeekLabel,
     taskText: detectedTaskText,
-    title: rawName || 'Dokument',
+    title: rawName ? rawName : 'Dokument',
     reason: reasonParts.length > 0 ? reasonParts.join(' • ') : 'Standard-Vorauswahl'
   };
 }
