@@ -6,7 +6,7 @@ var draggedDocId = null;
 var draggedDocFolderGroup = null;
 var pendingUploadQueue = [];
 var activePreviewObjectUrl = null;
-var openTaskFoldersSet = new Set();
+var openTaskFoldersSet = new Set(); 
 
 var lastDocDragStartTime = 0;
 var lastDocDragStartCoords = { x: 0, y: 0 };

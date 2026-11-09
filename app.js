@@ -6,7 +6,7 @@ var draggedTaskInfo = null;
 var searchDebounceTimer = null;
 
 async function initApp() {
-  showLoading('Lade Semesterplan & Dokumente...');
+  showLoading('Lade Semesterplan & Dokumente...'); 
   try {
     loadState();
     buildThemeMenuUI();

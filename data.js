@@ -23,7 +23,7 @@ const DOC_CATEGORIES = [
   { value: 'Übung',                     label: '✍️ Übung',                     icon: '✍️', chipClass: '' },
   { value: 'Lösungen',                  label: '✅ Lösungen',                  icon: '✅', chipClass: 'solution-chip' },
   { value: 'Hörsaalübung',              label: '🏛️ Hörsaalübung',              icon: '🏛️', chipClass: '' },
-  { value: 'Formelsammlung',            label: '📐 Formelsammlung',            icon: '📐', chipClass: 'formula-chip' },
+  { value: 'Formelsammlung',            label: '📐 Formelsammlung',            icon: '📐', chipClass: 'formula-chip' }, 
   { value: 'Zusatz',                    label: '➕ Zusatz',                    icon: '➕', chipClass: '' },
   { value: 'Testat / Praktikum',        label: '🔬 Testat / Praktikum',        icon: '🔬', chipClass: '' },
   { value: 'Klausur / Zusammenfassung', label: '🎓 Klausur / Zusammenfassung', icon: '🎓', chipClass: '' }

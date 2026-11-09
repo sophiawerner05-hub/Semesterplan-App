@@ -25,7 +25,7 @@ function startCancelableOperation(message = 'Lädt...') {
 function updateLoadingText(message) {
   const txt = document.getElementById('globalLoadingText');
   if (txt && message) txt.textContent = message;
-}
+} 
 
 function getActiveAbortSignal() {
   if (!currentActionAbortController) {

@@ -12,7 +12,7 @@ function getCategoryMeta(catValue) {
 
 function extractTaskTokens(text) {
   const s = String(text ?? '');
-  const tokens = [];
+  const tokens = []; 
   const patterns = [
     /\b(LE\s*0*(\d+))/gi,
     /\b((?:HSÜ|HSU|HSUE)\s*0*(\d+))/gi,

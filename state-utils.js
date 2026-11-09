@@ -16,7 +16,7 @@ var appState = null;
 var activeModuleFilter = null;
 var currentTab = 'table';
 var cachedDocsList = [];
-var docsDbPromise = null;
+var docsDbPromise = null; 
 
 /* =========================================================
    1. TEXT-ESCAPING & FORMATIERUNGS-HELFER

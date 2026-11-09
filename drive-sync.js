@@ -14,7 +14,7 @@ function scheduleAutoDriveSync(delayMs = 1200) {
   if (typeof isGoogleConnected !== 'function' || !isGoogleConnected()) return;
   if (autoDriveSyncTimer) clearTimeout(autoDriveSyncTimer);
   autoDriveSyncTimer = setTimeout(() => {
-    autoDriveSyncTimer = null;
+    autoDriveSyncTimer = null; 
     if (isDriveSyncInProgress) {
       pendingDriveResyncRequested = true;
     } else {
